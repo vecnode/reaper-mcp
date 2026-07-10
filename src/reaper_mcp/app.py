@@ -23,10 +23,16 @@ def bridge() -> BridgeClient:
     return _client
 
 
-def call_bridge(op: str, **args) -> dict:
-    """Convenience wrapper: call an op on the bridge, raising a clear error for tool callers."""
+def call_bridge(op: str, timeout: float | None = None, **args) -> dict:
+    """Convenience wrapper: call an op on the bridge, raising a clear error for tool callers.
+
+    Args:
+        op: operation name
+        timeout: optional timeout in seconds (default: 5s, or config default)
+        **args: operation arguments
+    """
     try:
-        return _client.call(op, args)
+        return _client.call(op, args, timeout=timeout)
     except BridgeError as exc:
         raise RuntimeError(str(exc)) from exc
 

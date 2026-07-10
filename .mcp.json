@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "reaper": {
+      "command": "uv",
+      "args": ["--directory", ".", "run", "reaper-mcp"]
+    }
+  }
+}

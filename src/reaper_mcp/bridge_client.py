@@ -93,11 +93,11 @@ class BridgeClient:
 
     # -- request/response ------------------------------------------------------
 
-    def call(self, op: str, args: dict | None = None, retries: int = 0) -> dict:
+    def call(self, op: str, args: dict | None = None, retries: int = 0, timeout: float | None = None) -> dict:
         last_exc: Exception | None = None
         for attempt in range(retries + 1):
             try:
-                return self._call_once(op, args or {})
+                return self._call_once(op, args or {}, timeout)
             except BridgeError as exc:
                 last_exc = exc
                 if attempt < retries:
@@ -106,7 +106,7 @@ class BridgeClient:
         assert last_exc is not None
         raise last_exc
 
-    def _call_once(self, op: str, args: dict) -> dict:
+    def _call_once(self, op: str, args: dict, timeout: float | None = None) -> dict:
         if not self.is_alive():
             raise BridgeNotConnected(
                 f"REAPER bridge heartbeat not found or stale at {self.heartbeat_file}. "
@@ -120,7 +120,8 @@ class BridgeClient:
         self._write_atomic(self.requests_dir / f"req_{req_id}.json", payload)
 
         response_path = self.responses_dir / f"resp_{req_id}.json"
-        deadline = time.monotonic() + self.config.request_timeout
+        effective_timeout = timeout if timeout is not None else self.config.request_timeout
+        deadline = time.monotonic() + effective_timeout
         while time.monotonic() < deadline:
             if response_path.exists():
                 try:
