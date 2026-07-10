@@ -31,7 +31,7 @@ The original design called for a persistent TCP socket bridge to avoid the
 poll-interval latency and race conditions of `total-reaper-mcp`'s file-based
 IPC. That called for a socket API inside vanilla ReaScript Lua; the plan
 assumed the `js_ReaScriptAPI` extension provided one (`JS_Socket_*`
-functions). **That was wrong** — verified against the actual js_ReaScriptAPI
+functions). **That was wrong** - verified against the actual js_ReaScriptAPI
 function reference, no such functions exist. ReaScript Lua has no raw socket
 API without a custom-compiled C++ extension, which isn't a reasonable install
 step to ask of a user.
@@ -42,7 +42,7 @@ redraws the UI at high frequency, so this is a ~16-33ms round trip) rather
 than on a coarse timer, and both sides write via a temp-file-then-rename so a
 reader never observes a half-written file. It's slower than a real socket
 would have been, but it needs zero extra REAPER extensions, which is a
-reasonable trade for setup simplicity — the honest option to present after
+reasonable trade for setup simplicity - the honest option to present after
 the socket assumption turned out to be false, rather than re-introducing a
 new unverified dependency to preserve the original latency target.
 
@@ -82,7 +82,7 @@ of just surfacing a bare error).
 Both sides need to agree on the same folder without explicit configuration:
 
 - The Lua script asks REAPER directly: `reaper.GetResourcePath() ..
-  "/Scripts/reaper_mcp_bridge"` — this is always correct for whichever REAPER
+  "/Scripts/reaper_mcp_bridge"` - this is always correct for whichever REAPER
   instance is actually running the script.
 - The Python side can't ask a running REAPER process the same question, so it
   mirrors the OS-specific known-path logic in `discovery.find_reaper_installs()`
