@@ -1,14 +1,14 @@
 # reaper-mcp
 
-An MCP server that lets Claude drive a **live, running REAPER DAW instance** —
+An MCP server that lets Claude drive a **live, running REAPER DAW instance** -
 transport control, tracks, FX/plugins, MIDI, media items, markers, view/zoom,
-rendering, and project state — plus a `run_reascript` escape hatch for
+rendering, and project state - plus a `run_reascript` escape hatch for
 anything not covered by a dedicated tool.
 
 Unlike file-parsing REAPER integrations, this talks to REAPER while it's
 running, and includes an engineer-style discovery layer that finds your
 REAPER install(s), the running REAPER process (with PID), and whether the
-bridge is actually reachable — so failures are diagnosable, not silent.
+bridge is actually reachable - so failures are diagnosable, not silent.
 
 ## Architecture
 
@@ -19,14 +19,14 @@ Claude  <--stdio-->  reaper-mcp (Python, uv)  <--file-based IPC-->  reaper_bridg
 The Python server writes one JSON request file per call into a bridge
 directory; `reaper_bridge.lua` picks it up on its next `reaper.defer()` tick
 (REAPER's UI frame rate, so ~16-33ms round trips) and writes a JSON response
-back. No REAPER extensions are required — this uses only the standard
+back. No REAPER extensions are required - this uses only the standard
 `io`/`os` Lua libraries and the `reaper.*` API, both built into vanilla
 ReaScript. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
 
 ## Requirements
 
 - [uv](https://docs.astral.sh/uv/) (Python package/venv manager)
-- REAPER (tested on 6.x/7.x) — nothing else. No extensions to install.
+- REAPER (tested on 6.x/7.x) - nothing else. No extensions to install.
 
 ## Setup
 
@@ -66,13 +66,13 @@ ReaScript. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
    With REAPER open and the bridge script running, `bridge_reachable` should
    be `true` and `running_processes` should list REAPER's PID. If it's
    `false`, the bridge script either isn't loaded/running in REAPER, or
-   REAPER's resource path doesn't match what was detected — check `bridge_dir`
+   REAPER's resource path doesn't match what was detected - check `bridge_dir`
    in the output against the folder the `.lua` file actually got copied to.
 3. **Run the batch file** if you haven't already:
    ```
    build_and_run.bat
    ```
-   It's stdio-based, so once started it just waits for an MCP client — that's
+   It's stdio-based, so once started it just waits for an MCP client - that's
    expected, not a hang.
 4. **Wire it into Claude** using the `.mcp.json`/Claude Desktop config snippet
    above, then restart Claude Code/Desktop.
@@ -84,7 +84,7 @@ ReaScript. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
 
 If a tool call errors with "bridge heartbeat not found or stale", the bridge
 script isn't currently running in REAPER (REAPER was closed, the script was
-stopped, or it crashed) — reload/rerun it via the Actions list.
+stopped, or it crashed) - reload/rerun it via the Actions list.
 
 ## Tool overview
 
@@ -100,7 +100,7 @@ stopped, or it crashed) — reload/rerun it via the Actions list.
 | View | `view_zoom_to_selection`, `view_scroll_to`, `view_set_arrange_zoom` |
 | Project | `project_save`, `project_undo` |
 | Render | `render_project` |
-| Escape hatch | `run_reascript(code)` — arbitrary ReaScript Lua |
+| Escape hatch | `run_reascript(code)` - arbitrary ReaScript Lua |
 
 ## Development
 
@@ -108,3 +108,7 @@ stopped, or it crashed) — reload/rerun it via the Actions list.
 uv sync --group dev
 uv run pytest
 ```
+
+## License
+
+Licensed under the MIT License.
