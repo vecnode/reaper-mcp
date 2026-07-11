@@ -2,14 +2,9 @@
 
 A comprehensive MCP for the Reaper Digital Audio Workstation (DAW).
 
-It connects Claude to a live, running REAPER instance for direct control of
-transport, tracks, FX/plugins, MIDI, media items, markers, view/zoom,
-rendering, project state, and native UI actions, with a `run_reascript`
-escape hatch for anything not covered by a dedicated tool. Unlike
-integrations that only read project files, this operates on REAPER while
-it's running, and includes a discovery layer that locates REAPER
-installs, the running REAPER process (with PID), and bridge reachability,
-so failures are diagnosable rather than silent.
+It connects Claude to a live, running REAPER instance - controlling
+transport, tracks, FX, MIDI, and rendering - and adds a small status
+window directly in REAPER's own native UI.
 
 ## Architecture
 
@@ -88,32 +83,6 @@ Once the bridge is running, a small "reaper-mcp" window appears in REAPER,
 - A quick reference list of available tool domains (Transport/Tracks/FX,
   MIDI/Items/Compose, Markers/View/Render, Actions/Project)
 
-The bridge doesn't try to guess a pixel-precise screen position - REAPER's
-dockers are separate panel regions (like where the Mixer docks), not
-overlays on the native toolbar, so there's no reliable way to place it
-"on top of" a specific toolbar button. Drag it once to whichever docker
-position you prefer; that choice is remembered across REAPER restarts.
-The console no longer opens automatically on startup either (it only pops
-up now if the bridge or status window hits a real error).
-
-**Want REAPER itself to open in a specific layout** (no tracks, mixer
-visible, video window docked right, etc.) **every launch?** That's a better
-fit for REAPER's own built-in tools than for ReaScript: set a blank
-project as your default template (Preferences -> Project -> "Default
-project template"), arrange the windows the way you want once, then save
-that arrangement as a Screenset (View -> Screensets) set to load on
-startup. Those are native, reliable REAPER features - safer than us
-scripting window geometry blind. If you want that screenset to also load
-automatically via our `__startup.lua` hook, find its action/command ID in
-REAPER's Actions list and use the `action_run` tool to trigger it from here.
-
-Honest caveat: because this is file-polling IPC rather than a persistent
-socket, the window can only reflect "the bridge script is running" and "a
-request was last seen N seconds ago" - it is **not** a live "Claude is
-connected right now" indicator, since an MCP client only reaches out when
-actively calling a tool. Closing the window doesn't stop the bridge itself;
-REAPER control keeps working either way.
-
 ## Tool overview
 
 | Domain | Examples |
@@ -131,47 +100,6 @@ REAPER control keeps working either way.
 | Project | `project_save`, `project_undo` |
 | Render | `render_project(output_path, start_sec, end_sec)` - explicit time bounds by default (see below), not whatever REAPER's render dialog last had configured |
 | Escape hatch | `run_reascript(code)` - arbitrary ReaScript Lua |
-
-### Composing and rendering audio
-
-`compose_and_render` collapses the track/MIDI-item/notes/render sequence
-into one call: give it a list of notes (`{pitch, start_sec, end_sec,
-velocity?, channel?}`) and an `output_path`, and it creates the track, MIDI
-item, every note, sets the render time range to exactly match the composed
-notes, and renders. MIDI notes are silent without a virtual instrument on
-the track, so by default it also adds REAPER's built-in ReaSynth to the new
-track if it has no instrument yet - pass `auto_instrument=false` to skip
-this if you're adding your own instrument/FX chain first.
-
-**Master safety limiter**: both `track_add` and `compose_and_render` default
-to `auto_limiter=true`, which ensures the master bus has REAPER's built-in
-ReaLimit (a true-peak brickwall limiter) before returning - added once, not
-duplicated on every new track. This is a safety net on the final mix, not a
-per-track effect, so nothing rendered or played back can blow out speakers
-or headphones. Pass `auto_limiter=false` to skip it. Inspect or adjust it
-directly with `fx_list(track_index=-1)` / `fx_set_param(track_index=-1, ...)`.
-
-`render_project` got the same time-range hardening as `compose_and_render` -
-both now default to explicit bounds (0 to the content/project length)
-instead of trusting whatever range REAPER's render dialog last had
-configured, which previously meant a fresh REAPER install could render the
-wrong length or fail outright.
-
-**If `output_path` already exists**, both tools render to the next
-available name by default (`tone_1.wav` -> `tone_1_2.wav` -> `tone_1_3.wav`,
-etc.) - the actual path used is returned in the result. REAPER would
-otherwise show a blocking "overwrite?" dialog, and since that's a modal
-dialog, the bridge's own polling loop is frozen while it's open with no way
-to detect or dismiss it once it appears - the auto-increment default avoids
-the condition entirely rather than trying to work around it. Pass
-`overwrite=true` to delete the existing file and render to the exact
-requested path instead.
-
-**Audio format (WAV, MP3, bit depth, etc.) is not set by either tool** -
-REAPER's render-format setting is a base64-encoded binary value, not a
-plain string, and isn't safe to set without a verified reference encoding.
-Open REAPER's render dialog once (File -> Render) and pick your format;
-after that, both tools will use it on every subsequent render.
 
 ## Development
 
