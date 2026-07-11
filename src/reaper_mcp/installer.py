@@ -1,5 +1,6 @@
-"""Installs reaper_bridge.lua into the detected REAPER Scripts directory,
-and wires it into REAPER's native __startup.lua so it auto-runs on launch.
+"""Installs reaper_bridge.lua and the default project into the detected
+REAPER install, and wires both into REAPER's native __startup.lua so they
+auto-run/auto-open on launch.
 """
 
 from __future__ import annotations
@@ -11,6 +12,8 @@ from pathlib import Path
 from .discovery import ReaperInstall, find_reaper_installs
 
 BRIDGE_FILENAME = "reaper_bridge.lua"
+DEFAULT_PROJECT_SOURCE_FILENAME = "default.RPP"
+DEFAULT_PROJECT_INSTALLED_FILENAME = "reaper-mcp-default.RPP"
 STARTUP_FILENAME = "__startup.lua"
 STARTUP_START_MARKER = "-- reaper-mcp:start"
 STARTUP_END_MARKER = "-- reaper-mcp:end"
@@ -26,9 +29,18 @@ def bridge_source_path() -> Path:
     return path
 
 
+def default_project_source_path() -> Path:
+    repo_root = Path(__file__).resolve().parents[2]
+    path = repo_root / "reaper_project" / DEFAULT_PROJECT_SOURCE_FILENAME
+    if not path.exists():
+        raise FileNotFoundError(f"bundled default project not found at {path}")
+    return path
+
+
 def install_bridge(install: ReaperInstall | None = None) -> list[str]:
-    """Copy reaper_bridge.lua into one or all detected REAPER Scripts dirs,
-    and wire it into __startup.lua so it auto-runs on the next REAPER launch.
+    """Copy reaper_bridge.lua and the default project into one or all
+    detected REAPER installs, and wire both into __startup.lua so the
+    bridge auto-runs and the default project auto-opens on the next launch.
 
     Returns a list of human-readable status lines for each install acted on.
     """
@@ -52,6 +64,7 @@ def install_bridge(install: ReaperInstall | None = None) -> list[str]:
         except PermissionError:
             results.append(f"skipped (no write permission): {dest}")
 
+    results.extend(install_default_project(install))
     results.extend(install_startup_hook(install))
 
     results.append(
@@ -62,10 +75,43 @@ def install_bridge(install: ReaperInstall | None = None) -> list[str]:
     return results
 
 
+def install_default_project(install: ReaperInstall | None = None) -> list[str]:
+    """Copy the bundled blank default project into one or all detected
+    REAPER installs' resource path, as a dedicated filename
+    (reaper-mcp-default.RPP) so it can't collide with or overwrite any of
+    the user's own projects. Unlike the bridge script (essential, missing
+    means install_bridge() itself should fail loudly), a missing default
+    project is a soft skip -- it's a convenience feature, not required for
+    the bridge to work."""
+    try:
+        src = default_project_source_path()
+    except FileNotFoundError:
+        return ["default project not bundled; skipped (bridge still installs normally)"]
+    targets = [install] if install else find_reaper_installs()
+    if not targets:
+        return ["No REAPER installation found; skipped default project."]
+
+    results = []
+    for inst in targets:
+        resource_path = Path(inst.resource_path)
+        dest = resource_path / DEFAULT_PROJECT_INSTALLED_FILENAME
+        try:
+            resource_path.mkdir(parents=True, exist_ok=True)
+            if dest.exists() and filecmp.cmp(src, dest, shallow=False):
+                results.append(f"default project up to date: {dest}")
+                continue
+            shutil.copy2(src, dest)
+            results.append(f"default project installed: {dest}")
+        except PermissionError:
+            results.append(f"skipped (no write permission): {dest}")
+    return results
+
+
 def _startup_block() -> str:
     return (
         f"{STARTUP_START_MARKER}\n"
         'pcall(dofile, reaper.GetResourcePath() .. "/Scripts/reaper_bridge.lua")\n'
+        f'pcall(reaper.Main_openProject, reaper.GetResourcePath() .. "/{DEFAULT_PROJECT_INSTALLED_FILENAME}")\n'
         f"{STARTUP_END_MARKER}\n"
     )
 
@@ -86,9 +132,10 @@ def _merge_startup_content(existing: str) -> str:
 
 
 def install_startup_hook(install: ReaperInstall | None = None) -> list[str]:
-    """Idempotently wire reaper_bridge.lua into REAPER's native __startup.lua
-    (a file REAPER auto-runs at launch; no extension required), without
-    disturbing any of the user's own startup script content."""
+    """Idempotently wire reaper_bridge.lua and the default project into
+    REAPER's native __startup.lua (a file REAPER auto-runs at launch; no
+    extension required), without disturbing any of the user's own startup
+    script content."""
     targets = [install] if install else find_reaper_installs()
     if not targets:
         return ["No REAPER installation found; skipped startup hook."]

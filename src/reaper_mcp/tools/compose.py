@@ -21,6 +21,7 @@ def compose_and_render(
     track_name: str = "Composed",
     overwrite: bool = False,
     auto_instrument: bool = True,
+    auto_limiter: bool = True,
 ) -> dict:
     """Create a new track, write a MIDI melody to it from a note list, and
     render it to an audio file, in one call. Each note in notes is a dict:
@@ -36,6 +37,11 @@ def compose_and_render(
     loaded, this adds REAPER's built-in ReaSynth so the render is actually
     audible. Pass auto_instrument=False to skip this if you're adding your
     own instrument/FX chain separately before rendering.
+
+    By default (auto_limiter=True), also ensures the master bus has a
+    limiter (REAPER's built-in ReaLimit) so nothing rendered can blow out
+    headphones/speakers - added once, not duplicated on repeated calls.
+    Pass auto_limiter=False to skip this.
 
     If output_path already exists: by default, renders to the next
     available name instead (output_path with "_2", "_3", etc. inserted
@@ -57,4 +63,5 @@ def compose_and_render(
         track_name=track_name,
         overwrite=overwrite,
         auto_instrument=auto_instrument,
+        auto_limiter=auto_limiter,
     )
