@@ -21,7 +21,10 @@ if not exist "lua\reaper_bridge.lua" (
 echo [reaper-mcp] Installing/updating the REAPER bridge script...
 uv run reaper-mcp --install-bridge
 
-echo [reaper-mcp] Starting MCP server (stdio)...
-uv run reaper-mcp
+echo.
+echo [reaper-mcp] Setup complete. The bridge will auto-start next time REAPER
+echo [reaper-mcp] launches (fully quit and reopen REAPER if it's already running).
+echo [reaper-mcp] Claude connects to this server itself via .mcp.json - there's
+echo [reaper-mcp] nothing further to run manually here.
 
 endlocal

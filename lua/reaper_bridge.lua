@@ -16,7 +16,7 @@
  No REAPER extensions required -- this uses only the standard io/os Lua
  libraries and the reaper.* API, both available in vanilla ReaScript.
 
- Also draws a small "MCP" status window (via REAPER's built-in gfx library)
+ Also draws a small "reaper-mcp" status window (via REAPER's built-in gfx library)
  in the same defer() loop, docked by default, showing whether the bridge
  has processed a request recently. This is honest about what it can show:
  since this is file-polling IPC, not a live socket, it reflects "bridge
@@ -234,6 +234,105 @@ local function track_or_error(args)
   return tr
 end
 
+local function find_item_at_start(tr, start_sec)
+  for i = 0, reaper.CountTrackMediaItems(tr) - 1 do
+    local it = reaper.GetTrackMediaItem(tr, i)
+    if math.abs(reaper.GetMediaItemInfo_Value(it, "D_POSITION") - start_sec) < 0.001 then
+      return it
+    end
+  end
+  return nil
+end
+
+-- Shared by ops.midi_add_note and ops.compose_and_render so both go through
+-- the same insertion logic.
+local function insert_midi_note(item, pitch, velocity, note_start_sec, note_end_sec, channel)
+  local take = reaper.GetActiveTake(item)
+  local ppq_start = reaper.MIDI_GetPPQPosFromProjTime(take, note_start_sec)
+  local ppq_end = reaper.MIDI_GetPPQPosFromProjTime(take, note_end_sec)
+  reaper.MIDI_InsertNote(take, false, false, ppq_start, ppq_end, channel or 0, pitch, velocity, false)
+end
+
+-- RENDER_BOUNDSFLAG=0 means "custom time range" (vs. entire project / time
+-- selection / regions / selected items), with RENDER_STARTPOS/RENDER_ENDPOS
+-- giving that range explicitly. Verified via REAPER API research: these are
+-- plain numeric GetSetProjectInfo keys. Deliberately not touching
+-- RENDER_FORMAT (codec/bitrate) anywhere in this file -- that's a
+-- base64-encoded binary fourcc blob, not a plain string, and isn't safe to
+-- set without a verified reference encoding, so audio format still comes
+-- from whatever REAPER's render dialog was last configured with (File ->
+-- Render once to set it up).
+local function set_render_bounds(start_sec, end_sec)
+  reaper.GetSetProjectInfo(0, "RENDER_BOUNDSFLAG", 0, true)
+  reaper.GetSetProjectInfo(0, "RENDER_STARTPOS", start_sec, true)
+  reaper.GetSetProjectInfo(0, "RENDER_ENDPOS", end_sec, true)
+end
+
+local function file_exists(path)
+  local f = io.open(path, "rb")
+  if f then f:close() return true end
+  return false
+end
+
+local function split_path(path)
+  local dir, filename = path:match("^(.*[\\/])([^\\/]*)$")
+  if not dir then
+    dir, filename = "", path
+  end
+  local base, ext = filename:match("^(.*)(%.[^.]*)$")
+  if not base then
+    base, ext = filename, ""
+  end
+  return dir, base, ext
+end
+
+-- Finds the first path_2/path_3/... variant that doesn't already exist.
+-- Pure filesystem check, no REAPER API involved -- doesn't touch anything.
+local function next_available_path(path)
+  local dir, base, ext = split_path(path)
+  local i = 2
+  while true do
+    local candidate = dir .. base .. "_" .. i .. ext
+    if not file_exists(candidate) then return candidate end
+    i = i + 1
+  end
+end
+
+-- If output_path already exists, REAPER's render action prompts an
+-- "overwrite?" dialog -- another modal that blocks this script's defer()
+-- loop the same way the missing-render-settings dialog did (see 42230
+-- comment below), with no way for this script to detect or dismiss it
+-- once open (the script itself is frozen while it's showing). Two ways to
+-- avoid that condition entirely:
+--   - default: auto-increment to the next non-colliding filename (path_2,
+--     path_3, ...) -- never touches the existing file, never shows a dialog.
+--   - overwrite=true: delete the existing file first instead (explicit
+--     opt-in only -- an earlier version did this unconditionally by default,
+--     an unbounded destructive standing behavior with no confirmation, and
+--     was correctly rejected).
+-- Returns the actual path that will be rendered to, which may differ from
+-- the requested output_path when auto-incremented.
+local function prepare_render_output(output_path, overwrite)
+  if not output_path then return output_path end
+  if not file_exists(output_path) then return output_path end
+
+  if not overwrite then
+    return next_available_path(output_path)
+  end
+
+  local ok, remove_err = os.remove(output_path)
+  if not ok then
+    -- Don't silently proceed: if deletion failed (e.g. the file is locked
+    -- by another process, or a previous interrupted render), REAPER's
+    -- render would still find it there and show its own blocking
+    -- "overwrite?" dialog anyway -- surfacing the real reason here instead
+    -- is strictly better than that.
+    error("could not delete existing output_path before render: " .. output_path
+      .. " (" .. tostring(remove_err) .. ") -- it may be open/locked by another process")
+  end
+  return output_path
+end
+
 ----------------------------------------------------------------------------
 -- Op handlers: op name -> function(args) -> result table
 ----------------------------------------------------------------------------
@@ -388,6 +487,75 @@ ops.fx_get_param = function(args)
   return { value = val }
 end
 
+-- midi
+ops.midi_add_item = function(args)
+  local tr = track_or_error(args)
+  reaper.CreateNewMIDIItemInProj(tr, args.start_sec, args.end_sec, false)
+  return {}
+end
+
+ops.midi_add_note = function(args)
+  local tr = track_or_error(args)
+  local item = find_item_at_start(tr, args.item_start_sec)
+  if not item then
+    error("no MIDI item found starting at " .. tostring(args.item_start_sec)
+      .. " on track " .. tostring(args.track_index))
+  end
+  insert_midi_note(item, args.pitch, args.velocity, args.note_start_sec, args.note_end_sec, args.channel)
+  reaper.MIDI_Sort(reaper.GetActiveTake(item))
+  return {}
+end
+
+-- compose: one call = new track + MIDI item + every note + render bounds +
+-- render trigger, instead of the caller chaining track_add/midi_add_item/
+-- midi_add_note (xN)/render_project separately. Reuses the same
+-- insert_midi_note/set_render_bounds helpers those ops use, not a copy.
+ops.compose_and_render = function(args)
+  local idx = reaper.CountTracks(0)
+  reaper.InsertTrackAtIndex(idx, true)
+  local tr = get_track(idx)
+  if args.track_name then reaper.GetSetMediaTrackInfo_String(tr, "P_NAME", args.track_name, true) end
+
+  -- MIDI notes are silent without a virtual instrument on the track --
+  -- neither live playback nor a render produces audible sound otherwise.
+  -- Default on for a new track (that's the whole point of "compose and
+  -- render": get audio out), auto_instrument=false opts out for callers
+  -- who want to add their own instrument/FX chain before rendering.
+  if args.auto_instrument ~= false and reaper.TrackFX_GetInstrument(tr) == -1 then
+    reaper.TrackFX_AddByName(tr, "ReaSynth", false, -1)
+  end
+
+  local notes = args.notes or {}
+  local max_end = 0
+  for _, n in ipairs(notes) do
+    if n.end_sec and n.end_sec > max_end then max_end = n.end_sec end
+  end
+  local item_end = max_end + 0.5
+
+  local item = reaper.CreateNewMIDIItemInProj(tr, 0, item_end, false)
+  for _, n in ipairs(notes) do
+    insert_midi_note(item, n.pitch, n.velocity or 64, n.start_sec, n.end_sec, n.channel)
+  end
+  reaper.MIDI_Sort(reaper.GetActiveTake(item))
+
+  local actual_output_path = args.output_path
+  if args.output_path then
+    actual_output_path = prepare_render_output(args.output_path, args.overwrite)
+    reaper.GetSetProjectInfo_String(0, "RENDER_FILE", actual_output_path, true)
+  end
+  set_render_bounds(0, item_end)
+  -- 42230 (not 41824): "using the most recent render settings, auto-close
+  -- render dialog" -- verified via REAPER action list research. Without
+  -- auto-close, the render dialog can stay open waiting for a manual Close
+  -- click (most reliably on a project's first-ever render, before any
+  -- render settings exist), which blocks REAPER's main thread and this
+  -- script's defer() loop along with it -- the bridge goes fully
+  -- unreachable, not just slow, until someone dismisses it by hand.
+  reaper.Main_OnCommand(42230, 0)
+
+  return { track_index = idx, render_end_sec = item_end, output_path = actual_output_path }
+end
+
 -- markers / regions
 ops.marker_add = function(args)
   local idx = reaper.AddProjectMarker(0, false, args.position_sec, 0, args.name or "", -1)
@@ -433,11 +601,28 @@ ops.project_save = function(args) reaper.Main_SaveProject(0, false) return {} en
 ops.project_undo = function(args) reaper.Main_OnCommand(40029, 0) return {} end
 
 ops.render_project = function(args)
+  local actual_output_path = args.output_path
   if args.output_path then
-    reaper.GetSetProjectInfo_String(0, "RENDER_FILE", args.output_path, true)
+    actual_output_path = prepare_render_output(args.output_path, args.overwrite)
+    reaper.GetSetProjectInfo_String(0, "RENDER_FILE", actual_output_path, true)
   end
-  reaper.Main_OnCommand(41824, 0) -- File: Render project, using the most recent render settings
-  return {}
+  if args.start_sec ~= nil and args.end_sec ~= nil then
+    set_render_bounds(args.start_sec, args.end_sec)
+  else
+    -- Default to the full current project length rather than trusting
+    -- whatever bounds mode/range REAPER's render dialog last had (which may
+    -- not have been configured at all on a fresh install).
+    set_render_bounds(0, reaper.GetProjectLength(0))
+  end
+  -- 42230 (not 41824): "using the most recent render settings, auto-close
+  -- render dialog" -- verified via REAPER action list research. Without
+  -- auto-close, the render dialog can stay open waiting for a manual Close
+  -- click (most reliably on a project's first-ever render, before any
+  -- render settings exist), which blocks REAPER's main thread and this
+  -- script's defer() loop along with it -- the bridge goes fully
+  -- unreachable, not just slow, until someone dismisses it by hand.
+  reaper.Main_OnCommand(42230, 0)
+  return { output_path = actual_output_path }
 end
 
 ----------------------------------------------------------------------------
@@ -551,12 +736,12 @@ local STATUS_ACTIVE_WINDOW_SEC = 3.0
 local DEFAULT_DOCK_STATE = 1
 local DOCK_STATE_KEY = "gfx_dock_v2"
 
--- Window/font sizing. Previously used REAPER's unset default gfx font
--- (small); these are explicit sizes roughly 2x that, with the window grown
--- to fit them plus the buttons below.
-local WINDOW_W, WINDOW_H = 240, 130
-local FONT_HEADER_SIZE = 26
+-- Window/font sizing. Roughly 2x REAPER's unset default gfx font, with the
+-- window grown to fit the header, status lines, and tool category list below.
+local WINDOW_W, WINDOW_H = 240, 170
+local FONT_HEADER_SIZE = 20
 local FONT_BODY_SIZE = 18
+local FONT_LIST_SIZE = 15
 
 -- The bridge itself has no on/off toggle -- once reaper_bridge.lua is
 -- loaded (via __startup.lua), its defer() loop runs for as long as REAPER
@@ -564,44 +749,15 @@ local FONT_BODY_SIZE = 18
 -- that fact plainly rather than implying a control that doesn't exist.
 -- "Active"/"Idle" below is a separate signal: recent request activity.
 
--- Buttons call the same REAPER API used by the transport_play/transport_stop
--- MCP tools directly (reaper.OnPlayButton/OnStopButton) -- no guessed
--- command IDs, since these are already-verified calls used elsewhere in
--- this file.
-local mouse_was_down = false
-local BUTTONS = {
-  { label = "Play", x = 10, y = 90, w = 70, h = 28, action = function() reaper.OnPlayButton() end },
-  { label = "Stop", x = 88, y = 90, w = 70, h = 28, action = function() reaper.OnStopButton() end },
+-- Static summary of available tool domains, kept in sync by hand with
+-- tools/__init__.py -- not generated, since this is a fixed-size status
+-- panel rather than a scrollable/interactive list.
+local TOOL_CATEGORIES = {
+  "Transport, Tracks, FX",
+  "MIDI, Items, Compose",
+  "Markers, View, Render",
+  "Actions, Project",
 }
-
-local function point_in_rect(px, py, rx, ry, rw, rh)
-  return px >= rx and px <= rx + rw and py >= ry and py <= ry + rh
-end
-
-local function draw_button(btn)
-  local hover = point_in_rect(gfx.mouse_x, gfx.mouse_y, btn.x, btn.y, btn.w, btn.h)
-  if hover then
-    gfx.set(0.35, 0.35, 0.35)
-  else
-    gfx.set(0.25, 0.25, 0.25)
-  end
-  gfx.rect(btn.x, btn.y, btn.w, btn.h, 1)
-  gfx.set(1, 1, 1)
-  gfx.x, gfx.y = btn.x + 16, btn.y + 6
-  gfx.drawstr(btn.label)
-end
-
-local function handle_button_clicks()
-  local mouse_down = (gfx.mouse_cap & 1) == 1
-  if mouse_was_down and not mouse_down then
-    for _, btn in ipairs(BUTTONS) do
-      if point_in_rect(gfx.mouse_x, gfx.mouse_y, btn.x, btn.y, btn.w, btn.h) then
-        btn.action()
-      end
-    end
-  end
-  mouse_was_down = mouse_down
-end
 
 local function draw_status_window()
   if not gfx_initialized then
@@ -631,11 +787,11 @@ local function draw_status_window()
   gfx.setfont(1, "Arial", FONT_HEADER_SIZE)
   gfx.set(1, 1, 1)
   gfx.x, gfx.y = 10, 6
-  gfx.drawstr("MCP")
+  gfx.drawstr("reaper-mcp")
 
   gfx.setfont(1, "Arial", FONT_BODY_SIZE)
   gfx.set(0.6, 0.9, 1)
-  gfx.x, gfx.y = 10, 38
+  gfx.x, gfx.y = 10, 32
   gfx.drawstr("Status: ON")
 
   if active then
@@ -643,13 +799,18 @@ local function draw_status_window()
   else
     gfx.set(0.65, 0.65, 0.65)
   end
-  gfx.x, gfx.y = 10, 60
+  gfx.x, gfx.y = 10, 54
   local request_label = request_count == 1 and "request" or "requests"
   gfx.drawstr((active and "Active" or "Idle") .. " - " .. tostring(request_count) .. " " .. request_label)
 
-  draw_button(BUTTONS[1])
-  draw_button(BUTTONS[2])
-  handle_button_clicks()
+  gfx.setfont(1, "Arial", FONT_LIST_SIZE)
+  gfx.set(0.75, 0.75, 0.75)
+  local list_y = 82
+  for _, line in ipairs(TOOL_CATEGORIES) do
+    gfx.x, gfx.y = 10, list_y
+    gfx.drawstr(line)
+    list_y = list_y + 20
+  end
 
   gfx.update()
 end
