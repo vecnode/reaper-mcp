@@ -81,6 +81,20 @@ This backs both `uv run reaper-mcp --status` (human/CI use) and the
 `reaper_status` MCP tool (so Claude can self-diagnose a broken bridge instead
 of just surfacing a bare error).
 
+## Request ID scoping (multiple concurrent clients)
+
+REAPER only expects one bridge script running, but nothing stops two
+separate `reaper-mcp` processes from connecting to it at once - e.g. Claude
+Code and Claude Desktop both configured against the same REAPER instance.
+Request/response filenames are `req_<id>.json` / `resp_<id>.json`; if `<id>`
+were a bare per-process counter ("1", "2", ...), two processes would both
+produce `req_1.json` and could read each other's responses. `BridgeClient`
+generates a short random `client_id` per instance (`uuid.uuid4().hex[:8]`)
+and scopes its counter under that (`req_<client_id>-<n>.json`), so concurrent
+clients never collide. The Lua side needs no changes for this - it already
+echoes back whatever `id` string it's given and derives the response
+filename from the request filename verbatim.
+
 ## Bridge directory resolution
 
 Both sides need to agree on the same folder without explicit configuration:
