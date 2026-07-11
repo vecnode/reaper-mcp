@@ -16,11 +16,25 @@
  No REAPER extensions required -- this uses only the standard io/os Lua
  libraries and the reaper.* API, both available in vanilla ReaScript.
 
+ Also draws a small "MCP" status window (via REAPER's built-in gfx library)
+ in the same defer() loop, docked by default, showing whether the bridge
+ has processed a request recently. This is honest about what it can show:
+ since this is file-polling IPC, not a live socket, it reflects "bridge
+ script is running" and "last request seen Ns ago" -- not a persistent
+ "Claude is attached right now" signal, since MCP clients only connect when
+ actively calling a tool. Drag it to whichever docker position you prefer;
+ that position is remembered across REAPER restarts.
+
+ Does not call reaper.ShowConsoleMsg() on routine startup (that forces the
+ ReaScript console open, disruptive now that this auto-runs via
+ __startup.lua on every launch) -- only on real pump/gfx errors.
+
  Install: copy this file into REAPER's Scripts folder (or let
- `uv run reaper-mcp --install-bridge` do it for you), then in REAPER:
-   Actions -> Show action list -> New action -> Load ReaScript... -> select
-   this file -> Run. Optionally right-click it in the action list and choose
-   "Run on startup" so the bridge is always live.
+ `uv run reaper-mcp --install-bridge` do it for you, which also wires up
+ REAPER's native __startup.lua so this runs automatically on every REAPER
+ launch -- no manual Actions-list step needed after the first install).
+ Manual load, if you ever need it: Actions -> Show action list -> New
+ action -> Load ReaScript... -> select this file -> Run.
 --]]
 
 local SEP = package.config:sub(1, 1)
@@ -403,6 +417,17 @@ ops.view_set_arrange_zoom = function(args)
   return {}
 end
 
+-- native/custom actions (transport, toggles like snap, ripple edit, etc.)
+ops.action_run = function(args)
+  reaper.Main_OnCommand(args.command_id, args.section or 0)
+  return {}
+end
+
+ops.action_get_state = function(args)
+  local state = reaper.GetToggleCommandStateEx(args.section or 0, args.command_id)
+  return { state = state }
+end
+
 -- project
 ops.project_save = function(args) reaper.Main_SaveProject(0, false) return {} end
 ops.project_undo = function(args) reaper.Main_OnCommand(40029, 0) return {} end
@@ -422,6 +447,14 @@ end
 local function log(msg)
   reaper.ShowConsoleMsg("[reaper_mcp] " .. tostring(msg) .. "\n")
 end
+
+-- status window state: tracks bridge activity, not a live "Claude is
+-- attached" signal -- this is file-polling IPC, so the most honest thing we
+-- can show is "the bridge script is running" and "a request was last seen
+-- N seconds ago", not a persistent connection state.
+local last_request_time = nil
+local request_count = 0
+local gfx_initialized = false
 
 local function ensure_dirs()
   reaper.RecursiveCreateDirectory(REQUESTS_DIR, 0)
@@ -474,6 +507,9 @@ local function process_one_request(filename)
     resp = handle_request(req)
   end
 
+  last_request_time = reaper.time_precise()
+  request_count = request_count + 1
+
   -- filename convention: req_<id>.json -> resp_<id>.json
   local id_part = filename:match("^req_(.+)%.json$") or filename
   write_file_atomic(RESPONSES_DIR .. SEP .. "resp_" .. id_part .. ".json", json.encode(resp))
@@ -494,11 +530,144 @@ local function pump()
   end
 end
 
+----------------------------------------------------------------------------
+-- Status window (gfx), same defer loop as the IPC pump above
+----------------------------------------------------------------------------
+
+local STATUS_ACTIVE_WINDOW_SEC = 3.0
+
+-- Default to docked (bit0=1, docker index 0) rather than floating. Which
+-- physical docker "index 0" lands in depends on the user's REAPER docker
+-- layout -- there's no reliable numeric ID for a specific screen corner, so
+-- this is a starting point, not a guaranteed position. Drag it to your
+-- preferred docker once; DOCK_STATE_KEY below remembers that choice.
+--
+-- Uses a "_v2" key deliberately: earlier versions defaulted to floating
+-- (dock state 0) and saved that back to ExtState. `tonumber("0") or
+-- DEFAULT` evaluates to 0, not DEFAULT, because 0 is truthy in Lua -- so a
+-- stale "0" from before this fix would silently keep overriding the new
+-- docked default forever. Switching keys resets that stale value once;
+-- the empty-string check below prevents the same bug from recurring.
+local DEFAULT_DOCK_STATE = 1
+local DOCK_STATE_KEY = "gfx_dock_v2"
+
+-- Window/font sizing. Previously used REAPER's unset default gfx font
+-- (small); these are explicit sizes roughly 2x that, with the window grown
+-- to fit them plus the buttons below.
+local WINDOW_W, WINDOW_H = 240, 130
+local FONT_HEADER_SIZE = 26
+local FONT_BODY_SIZE = 18
+
+-- The bridge itself has no on/off toggle -- once reaper_bridge.lua is
+-- loaded (via __startup.lua), its defer() loop runs for as long as REAPER
+-- is open, independent of whether this window is open. "Status: ON" reflects
+-- that fact plainly rather than implying a control that doesn't exist.
+-- "Active"/"Idle" below is a separate signal: recent request activity.
+
+-- Buttons call the same REAPER API used by the transport_play/transport_stop
+-- MCP tools directly (reaper.OnPlayButton/OnStopButton) -- no guessed
+-- command IDs, since these are already-verified calls used elsewhere in
+-- this file.
+local mouse_was_down = false
+local BUTTONS = {
+  { label = "Play", x = 10, y = 90, w = 70, h = 28, action = function() reaper.OnPlayButton() end },
+  { label = "Stop", x = 88, y = 90, w = 70, h = 28, action = function() reaper.OnStopButton() end },
+}
+
+local function point_in_rect(px, py, rx, ry, rw, rh)
+  return px >= rx and px <= rx + rw and py >= ry and py <= ry + rh
+end
+
+local function draw_button(btn)
+  local hover = point_in_rect(gfx.mouse_x, gfx.mouse_y, btn.x, btn.y, btn.w, btn.h)
+  if hover then
+    gfx.set(0.35, 0.35, 0.35)
+  else
+    gfx.set(0.25, 0.25, 0.25)
+  end
+  gfx.rect(btn.x, btn.y, btn.w, btn.h, 1)
+  gfx.set(1, 1, 1)
+  gfx.x, gfx.y = btn.x + 16, btn.y + 6
+  gfx.drawstr(btn.label)
+end
+
+local function handle_button_clicks()
+  local mouse_down = (gfx.mouse_cap & 1) == 1
+  if mouse_was_down and not mouse_down then
+    for _, btn in ipairs(BUTTONS) do
+      if point_in_rect(gfx.mouse_x, gfx.mouse_y, btn.x, btn.y, btn.w, btn.h) then
+        btn.action()
+      end
+    end
+  end
+  mouse_was_down = mouse_down
+end
+
+local function draw_status_window()
+  if not gfx_initialized then
+    local raw_dock = reaper.GetExtState("reaper_mcp", DOCK_STATE_KEY)
+    local saved_dock = (raw_dock ~= "" and tonumber(raw_dock)) or DEFAULT_DOCK_STATE
+    gfx.init("reaper-mcp", WINDOW_W, WINDOW_H, saved_dock)
+    gfx_initialized = true
+  end
+
+  local char = gfx.getchar()
+  if char < 0 then
+    -- user closed the window; the IPC pump keeps running regardless
+    gfx.quit()
+    gfx_initialized = false
+    return
+  end
+
+  local dock = gfx.dock(-1)
+  reaper.SetExtState("reaper_mcp", DOCK_STATE_KEY, tostring(dock), true)
+
+  local active = last_request_time ~= nil
+    and (reaper.time_precise() - last_request_time) < STATUS_ACTIVE_WINDOW_SEC
+
+  gfx.set(0.15, 0.15, 0.15)
+  gfx.rect(0, 0, gfx.w, gfx.h, 1)
+
+  gfx.setfont(1, "Arial", FONT_HEADER_SIZE)
+  gfx.set(1, 1, 1)
+  gfx.x, gfx.y = 10, 6
+  gfx.drawstr("MCP")
+
+  gfx.setfont(1, "Arial", FONT_BODY_SIZE)
+  gfx.set(0.6, 0.9, 1)
+  gfx.x, gfx.y = 10, 38
+  gfx.drawstr("Status: ON")
+
+  if active then
+    gfx.set(0.2, 0.85, 0.3)
+  else
+    gfx.set(0.65, 0.65, 0.65)
+  end
+  gfx.x, gfx.y = 10, 60
+  local request_label = request_count == 1 and "request" or "requests"
+  gfx.drawstr((active and "Active" or "Idle") .. " - " .. tostring(request_count) .. " " .. request_label)
+
+  draw_button(BUTTONS[1])
+  draw_button(BUTTONS[2])
+  handle_button_clicks()
+
+  gfx.update()
+end
+
 local function main_loop()
   local ok, err = pcall(pump)
   if not ok then log("error: " .. tostring(err)) end
+
+  local gfx_ok, gfx_err = pcall(draw_status_window)
+  if not gfx_ok then log("status window error: " .. tostring(gfx_err)) end
+
   reaper.defer(main_loop)
 end
 
-log("reaper_mcp bridge starting, watching " .. REQUESTS_DIR)
+-- Deliberately not calling log() here: reaper.ShowConsoleMsg() forces
+-- REAPER's ReaScript console window open, which is disruptive on every
+-- single REAPER launch now that this runs via __startup.lua. The status
+-- window is the intended way to confirm the bridge is running; log() is
+-- reserved for real errors below (pump/gfx failures), where popping the
+-- console open is actually useful.
 main_loop()

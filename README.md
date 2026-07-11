@@ -1,14 +1,15 @@
 # reaper-mcp
 
-An MCP server that lets Claude drive a **live, running REAPER DAW instance** -
-transport control, tracks, FX/plugins, MIDI, media items, markers, view/zoom,
-rendering, and project state - plus a `run_reascript` escape hatch for
-anything not covered by a dedicated tool.
+A comprehensive MCP for the Reaper Digital Audio Workstation (DAW).
 
-Unlike file-parsing REAPER integrations, this talks to REAPER while it's
-running, and includes an engineer-style discovery layer that finds your
-REAPER install(s), the running REAPER process (with PID), and whether the
-bridge is actually reachable - so failures are diagnosable, not silent.
+It connects Claude to a live, running REAPER instance for direct control of
+transport, tracks, FX/plugins, MIDI, media items, markers, view/zoom,
+rendering, project state, and native UI actions, with a `run_reascript`
+escape hatch for anything not covered by a dedicated tool. Unlike
+integrations that only read project files, this operates on REAPER while
+it's running, and includes a discovery layer that locates REAPER
+installs, the running REAPER process (with PID), and bridge reachability,
+so failures are diagnosable rather than silent.
 
 ## Architecture
 
@@ -35,12 +36,16 @@ ReaScript. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
    build_and_run.bat
    ```
    This runs `uv sync`, copies `lua/reaper_bridge.lua` into your REAPER
-   `Scripts` folder, and starts the MCP server over stdio.
-2. In REAPER: **Actions -> Show action list -> New action -> Load ReaScript...**,
+   `Scripts` folder, wires it into REAPER's native `__startup.lua` (so it
+   auto-runs on every future REAPER launch - see "Auto-start" below), and
+   starts the MCP server over stdio.
+2. If REAPER is **already open**, the startup hook won't retroactively start
+   it this session - either fully quit and reopen REAPER, or load it once
+   manually: **Actions -> Show action list -> New action -> Load ReaScript...**,
    select `reaper_bridge.lua`, then **Run** it. You should see
    `[reaper_mcp] reaper_bridge starting, watching ...` in REAPER's console
-   (Extensions -> ReaScript console). Right-click the action and choose
-   **"Run on startup"** if you want the bridge always live.
+   (Extensions -> ReaScript console), and a small "MCP" status window should
+   appear (see "Status window" below).
 3. Point Claude Code (or Claude Desktop) at the server. Example
    `.mcp.json` / `claude_desktop_config.json` entry:
    ```json
@@ -84,7 +89,52 @@ ReaScript. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
 
 If a tool call errors with "bridge heartbeat not found or stale", the bridge
 script isn't currently running in REAPER (REAPER was closed, the script was
-stopped, or it crashed) - reload/rerun it via the Actions list.
+stopped, or it crashed) - reload/rerun it via the Actions list, or confirm
+the `__startup.lua` hook is in place (see "Auto-start" below).
+
+## Auto-start (no more manual "run it every session")
+
+`build_and_run.bat` (and `uv run reaper-mcp --install-bridge`) wire the
+bridge into REAPER's native `__startup.lua` file - a script REAPER runs
+automatically at launch, no extension required. This is done idempotently
+and non-destructively: our addition lives inside marker comments
+(`-- reaper-mcp:start` / `-- reaper-mcp:end`) inside `__startup.lua`, so any
+of your own startup script content in that file is preserved and only our
+block gets updated on reinstall. Takes effect on REAPER's *next* launch -
+fully quit and reopen REAPER to see it, not just close/reopen a project.
+
+## Status window
+
+Once the bridge is running, a small "MCP" window appears in REAPER, **docked
+by default** (not floating). It shows:
+- Green **"Bridge: Active"** if a request was processed in the last ~3 seconds
+- Gray **"Bridge: Idle"** otherwise, plus a running request count
+
+The bridge doesn't try to guess a pixel-precise screen position - REAPER's
+dockers are separate panel regions (like where the Mixer docks), not
+overlays on the native toolbar, so there's no reliable way to place it
+"on top of" a specific toolbar button. Drag it once to whichever docker
+position you prefer; that choice is remembered across REAPER restarts.
+The console no longer opens automatically on startup either (it only pops
+up now if the bridge or status window hits a real error).
+
+**Want REAPER itself to open in a specific layout** (no tracks, mixer
+visible, video window docked right, etc.) **every launch?** That's a better
+fit for REAPER's own built-in tools than for ReaScript: set a blank
+project as your default template (Preferences -> Project -> "Default
+project template"), arrange the windows the way you want once, then save
+that arrangement as a Screenset (View -> Screensets) set to load on
+startup. Those are native, reliable REAPER features - safer than us
+scripting window geometry blind. If you want that screenset to also load
+automatically via our `__startup.lua` hook, find its action/command ID in
+REAPER's Actions list and use the `action_run` tool to trigger it from here.
+
+Honest caveat: because this is file-polling IPC rather than a persistent
+socket, the window can only reflect "the bridge script is running" and "a
+request was last seen N seconds ago" - it is **not** a live "Claude is
+connected right now" indicator, since an MCP client only reaches out when
+actively calling a tool. Closing the window doesn't stop the bridge itself;
+REAPER control keeps working either way.
 
 ## Tool overview
 
@@ -98,6 +148,7 @@ stopped, or it crashed) - reload/rerun it via the Actions list.
 | Items | `item_split/move/glue_selected/render_in_place_selected` |
 | Markers | `marker_add`, `region_add` |
 | View | `view_zoom_to_selection`, `view_scroll_to`, `view_set_arrange_zoom` |
+| Actions | `action_run(command_id)`, `action_get_toggle_state(command_id)` - drive any native UI toggle (snap, ripple edit, etc.) or custom action; look up `command_id` via REAPER's Actions list ("Copy selected action ID") |
 | Project | `project_save`, `project_undo` |
 | Render | `render_project` |
 | Escape hatch | `run_reascript(code)` - arbitrary ReaScript Lua |

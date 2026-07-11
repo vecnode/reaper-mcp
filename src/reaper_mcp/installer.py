@@ -1,4 +1,6 @@
-"""Installs reaper_bridge.lua into the detected REAPER Scripts directory."""
+"""Installs reaper_bridge.lua into the detected REAPER Scripts directory,
+and wires it into REAPER's native __startup.lua so it auto-runs on launch.
+"""
 
 from __future__ import annotations
 
@@ -9,6 +11,9 @@ from pathlib import Path
 from .discovery import ReaperInstall, find_reaper_installs
 
 BRIDGE_FILENAME = "reaper_bridge.lua"
+STARTUP_FILENAME = "__startup.lua"
+STARTUP_START_MARKER = "-- reaper-mcp:start"
+STARTUP_END_MARKER = "-- reaper-mcp:end"
 
 
 def bridge_source_path() -> Path:
@@ -22,7 +27,8 @@ def bridge_source_path() -> Path:
 
 
 def install_bridge(install: ReaperInstall | None = None) -> list[str]:
-    """Copy reaper_bridge.lua into one or all detected REAPER Scripts dirs.
+    """Copy reaper_bridge.lua into one or all detected REAPER Scripts dirs,
+    and wire it into __startup.lua so it auto-runs on the next REAPER launch.
 
     Returns a list of human-readable status lines for each install acted on.
     """
@@ -40,16 +46,66 @@ def install_bridge(install: ReaperInstall | None = None) -> list[str]:
 
             if dest.exists() and filecmp.cmp(src, dest, shallow=False):
                 results.append(f"up to date: {dest}")
-                continue
-
-            shutil.copy2(src, dest)
-            results.append(f"installed: {dest}")
+            else:
+                shutil.copy2(src, dest)
+                results.append(f"installed: {dest}")
         except PermissionError:
             results.append(f"skipped (no write permission): {dest}")
 
+    results.extend(install_startup_hook(install))
+
     results.append(
-        "Next step (one-time, per REAPER instance): in REAPER, open Actions -> Show action "
-        "list -> New action -> Load ReaScript..., select reaper_bridge.lua, then Run it "
-        "(or right-click -> 'Run on startup' so it's always active). No extensions required."
+        "The bridge is wired into REAPER's __startup.lua and will auto-run the next "
+        "time REAPER launches (fully quit and reopen REAPER if it's already running "
+        "for this to take effect). No manual Actions-list step or extensions required."
     )
+    return results
+
+
+def _startup_block() -> str:
+    return (
+        f"{STARTUP_START_MARKER}\n"
+        'pcall(dofile, reaper.GetResourcePath() .. "/Scripts/reaper_bridge.lua")\n'
+        f"{STARTUP_END_MARKER}\n"
+    )
+
+
+def _merge_startup_content(existing: str) -> str:
+    """Insert/replace our marker-delimited block, leaving any of the user's
+    own __startup.lua content untouched."""
+    block = _startup_block()
+    start_idx = existing.find(STARTUP_START_MARKER)
+    end_idx = existing.find(STARTUP_END_MARKER)
+    if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+        end_idx_full = end_idx + len(STARTUP_END_MARKER)
+        return existing[:start_idx] + block.rstrip("\n") + existing[end_idx_full:]
+
+    if existing and not existing.endswith("\n"):
+        existing += "\n"
+    return existing + block
+
+
+def install_startup_hook(install: ReaperInstall | None = None) -> list[str]:
+    """Idempotently wire reaper_bridge.lua into REAPER's native __startup.lua
+    (a file REAPER auto-runs at launch; no extension required), without
+    disturbing any of the user's own startup script content."""
+    targets = [install] if install else find_reaper_installs()
+    if not targets:
+        return ["No REAPER installation found; skipped startup hook."]
+
+    results = []
+    for inst in targets:
+        scripts_dir = Path(inst.scripts_dir)
+        dest = scripts_dir / STARTUP_FILENAME
+        try:
+            scripts_dir.mkdir(parents=True, exist_ok=True)
+            existing = dest.read_text(encoding="utf-8") if dest.exists() else ""
+            merged = _merge_startup_content(existing)
+            if merged == existing:
+                results.append(f"startup hook up to date: {dest}")
+                continue
+            dest.write_text(merged, encoding="utf-8")
+            results.append(f"startup hook installed: {dest}")
+        except PermissionError:
+            results.append(f"skipped (no write permission): {dest}")
     return results

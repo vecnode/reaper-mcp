@@ -9,17 +9,21 @@ Python MCP server -- src/reaper_mcp/  (uv-run, FastMCP)
     ├── app.py           shared FastMCP instance + BridgeClient
     ├── bridge_client.py file-based IPC client, polls for response files
     ├── discovery.py     REAPER install scan, running-process/PID lookup (psutil), heartbeat check
-    ├── installer.py     copies lua/reaper_bridge.lua into REAPER's Scripts dir
+    ├── installer.py     copies lua/reaper_bridge.lua into REAPER's Scripts dir,
+    │                     wires it into REAPER's native __startup.lua
     └── tools/           one module per domain, each a thin @mcp.tool() wrapper
         │  file IPC: <bridge_dir>/requests/req_<id>.json -> .../responses/resp_<id>.json
         │  bridge_dir = <REAPER resource path>/Scripts/reaper_mcp_bridge
         ▼
-lua/reaper_bridge.lua -- runs inside REAPER via reaper.defer()
+lua/reaper_bridge.lua -- runs inside REAPER via reaper.defer(), auto-loaded
+by __startup.lua on REAPER launch
     - every defer() tick: touches heartbeat.txt, scans requests/ for new
       req_*.json files, dispatches each via a lookup table (op name -> handler
       function -> reaper.* API calls), writes the JSON result to responses/
-    - includes a run_reascript op that loads+executes arbitrary Lua for the
-      run_reascript MCP tool escape hatch
+    - includes a run_reascript op (arbitrary Lua escape hatch) and
+      action_run/action_get_state ops (native UI toggles like snap, ripple
+      edit, or any custom action, by command ID)
+    - same defer() tick also draws a small "MCP" gfx status window (see below)
         │  reaper.* ReaScript API
         ▼
 REAPER DAW process
@@ -89,3 +93,67 @@ Both sides need to agree on the same folder without explicit configuration:
   (same paths listed above) and uses the first match. Set
   `REAPER_MCP_BRIDGE_DIR` to override this on either side if REAPER's resource
   path is nonstandard.
+
+## Native UI control (`action_run` / `action_get_state`)
+
+REAPER exposes both native UI toggles (snap to grid, ripple editing, etc.)
+and custom/ReaScript actions through the same mechanism: a numeric command
+ID, scoped to a section (0 = main). `ops.action_run` calls
+`reaper.Main_OnCommand(command_id, section)` - for a toggle action, calling
+it again flips the toggle, same as clicking the UI control it corresponds
+to. `ops.action_get_state` calls `reaper.GetToggleCommandStateEx` to read
+on/off state. Deliberately, no command IDs are hardcoded anywhere in this
+codebase: REAPER assigns them per-install/version, and after getting burned
+once by asserting an unverified REAPER API from memory (see above), the
+correct move is to have the caller look them up live via REAPER's own
+Actions list rather than trust a remembered number.
+
+REAPER's API does not expose a way to inject new buttons into its *native*
+timeline/arrange toolbar - that's simply not something ReaScript can do.
+What "add buttons" actually means here is the status window below, which
+draws its own UI via `gfx` and can have its own clickable regions.
+
+## Status window
+
+`reaper_bridge.lua` also draws a small "MCP" indicator window using
+REAPER's built-in `gfx` Lua library (no extension), in the *same*
+`reaper.defer()` loop as the IPC pump - not a separate script, since two
+independently-loaded ReaScripts run as separate Lua VMs with no shared
+state, and the window needs to see the pump's request activity directly.
+
+- `last_request_time` / `request_count` locals are updated in
+  `process_one_request` and read by `draw_status_window`.
+- The window's docked/floating position persists across REAPER restarts via
+  `reaper.SetExtState("reaper_mcp", "gfx_dock", ...)` / `GetExtState`,
+  read back on `gfx.init`. First-ever run defaults to floating rather than
+  guessing a specific dock slot ID.
+- Closing the window (`gfx.getchar() < 0`) calls `gfx.quit()` and stops
+  drawing, but the IPC pump keeps running in the same `defer()` loop
+  regardless - REAPER control never depends on the status window being open.
+
+**Deliberately conservative about what "connected" means**: this is
+file-polling IPC, not a persistent socket, so there is no actual live
+connection state to report. The window shows "Bridge: Active" (a request
+was processed in the last ~3s) or "Bridge: Idle" (script running, no recent
+activity) - never "Claude: Connected", since an MCP client only reaches the
+bridge at all when actively calling a tool.
+
+## Auto-start via `__startup.lua`
+
+REAPER runs a file named exactly `__startup.lua` in the Scripts folder
+automatically at launch - a native mechanism, no SWS or other extension
+required (confirmed via research before relying on it, given the earlier
+js_ReaScriptAPI mistake). `installer.install_startup_hook()` manages a
+marker-delimited block (`-- reaper-mcp:start` / `-- reaper-mcp:end`) inside
+that file:
+
+- Block content is a `pcall`-wrapped `dofile(...)` pointing at the installed
+  `reaper_bridge.lua`, so a syntax error in our bridge can't break the
+  user's other startup scripts.
+- If `__startup.lua` doesn't exist, it's created with just our block. If it
+  exists with foreign content, our block is appended, preserving the rest.
+  If it exists with our markers already present (from a previous install),
+  only the content between them is replaced - never duplicated.
+- Called automatically from `install_bridge()`, so `build_and_run.bat` alone
+  is sufficient; no separate flag or manual step. Takes effect on REAPER's
+  *next* launch, not the currently-running instance.
