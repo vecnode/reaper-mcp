@@ -126,18 +126,26 @@ REAPER control keeps working either way.
 into one call: give it a list of notes (`{pitch, start_sec, end_sec,
 velocity?, channel?}`) and an `output_path`, and it creates the track, MIDI
 item, every note, sets the render time range to exactly match the composed
-notes, and renders. `render_project` got the same time-range hardening -
+notes, and renders. MIDI notes are silent without a virtual instrument on
+the track, so by default it also adds REAPER's built-in ReaSynth to the new
+track if it has no instrument yet - pass `auto_instrument=false` to skip
+this if you're adding your own instrument/FX chain first.
+
+`render_project` got the same time-range hardening as `compose_and_render` -
 both now default to explicit bounds (0 to the content/project length)
 instead of trusting whatever range REAPER's render dialog last had
 configured, which previously meant a fresh REAPER install could render the
 wrong length or fail outright.
 
-**If `output_path` already exists, both tools error instead of rendering**
-unless you pass `overwrite=true`. REAPER would otherwise show a blocking
-"overwrite?" dialog - and since that's a modal dialog, the bridge's own
-polling loop is frozen while it's open, so there's no way for either tool
-to detect or dismiss it once it appears. Passing `overwrite=true` deletes
-the existing file first so the prompt never has a reason to show up.
+**If `output_path` already exists**, both tools render to the next
+available name by default (`tone_1.wav` -> `tone_1_2.wav` -> `tone_1_3.wav`,
+etc.) - the actual path used is returned in the result. REAPER would
+otherwise show a blocking "overwrite?" dialog, and since that's a modal
+dialog, the bridge's own polling loop is frozen while it's open with no way
+to detect or dismiss it once it appears - the auto-increment default avoids
+the condition entirely rather than trying to work around it. Pass
+`overwrite=true` to delete the existing file and render to the exact
+requested path instead.
 
 **Audio format (WAV, MP3, bit depth, etc.) is not set by either tool** -
 REAPER's render-format setting is a base64-encoded binary value, not a

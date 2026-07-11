@@ -17,13 +17,15 @@ def render_project(
     end_sec are both given, renders exactly that time range; otherwise
     renders the full current project length (0 to the end of the last
     item) rather than depending on whatever range was last configured in
-    REAPER's render dialog.
+    REAPER's render dialog. Returns the actual output_path used.
 
-    If output_path already exists, this errors instead of rendering unless
-    overwrite=True is passed - REAPER would otherwise show a blocking
-    "overwrite?" dialog that freezes the bridge with no way to detect or
-    dismiss it. Pass overwrite=True to replace an existing file, or choose
-    a different output_path.
+    If output_path already exists: by default, renders to the next
+    available name instead (output_path with "_2", "_3", etc. inserted
+    before the extension) - never touches the existing file, never shows a
+    dialog. Pass overwrite=True to delete the existing file and render to
+    the exact requested output_path instead. Either way, REAPER's own
+    blocking "overwrite?" dialog (which would otherwise freeze the bridge
+    with no way to detect or dismiss it) never has a reason to appear.
 
     Note: audio format/codec (WAV, MP3, bit depth, etc.) is NOT set by this
     tool - it still comes from REAPER's currently configured render

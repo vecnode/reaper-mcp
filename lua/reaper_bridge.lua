@@ -268,24 +268,58 @@ local function set_render_bounds(start_sec, end_sec)
   reaper.GetSetProjectInfo(0, "RENDER_ENDPOS", end_sec, true)
 end
 
+local function file_exists(path)
+  local f = io.open(path, "rb")
+  if f then f:close() return true end
+  return false
+end
+
+local function split_path(path)
+  local dir, filename = path:match("^(.*[\\/])([^\\/]*)$")
+  if not dir then
+    dir, filename = "", path
+  end
+  local base, ext = filename:match("^(.*)(%.[^.]*)$")
+  if not base then
+    base, ext = filename, ""
+  end
+  return dir, base, ext
+end
+
+-- Finds the first path_2/path_3/... variant that doesn't already exist.
+-- Pure filesystem check, no REAPER API involved -- doesn't touch anything.
+local function next_available_path(path)
+  local dir, base, ext = split_path(path)
+  local i = 2
+  while true do
+    local candidate = dir .. base .. "_" .. i .. ext
+    if not file_exists(candidate) then return candidate end
+    i = i + 1
+  end
+end
+
 -- If output_path already exists, REAPER's render action prompts an
 -- "overwrite?" dialog -- another modal that blocks this script's defer()
 -- loop the same way the missing-render-settings dialog did (see 42230
 -- comment below), with no way for this script to detect or dismiss it
--- once open (the script itself is frozen while it's showing). Rather than
--- silently deleting whatever's at output_path on every render call (a
--- standing, unbounded destructive default), this only deletes the existing
--- file when the caller explicitly passes overwrite=true; otherwise it
--- errors clearly so the caller picks a different path or opts in.
+-- once open (the script itself is frozen while it's showing). Two ways to
+-- avoid that condition entirely:
+--   - default: auto-increment to the next non-colliding filename (path_2,
+--     path_3, ...) -- never touches the existing file, never shows a dialog.
+--   - overwrite=true: delete the existing file first instead (explicit
+--     opt-in only -- an earlier version did this unconditionally by default,
+--     an unbounded destructive standing behavior with no confirmation, and
+--     was correctly rejected).
+-- Returns the actual path that will be rendered to, which may differ from
+-- the requested output_path when auto-incremented.
 local function prepare_render_output(output_path, overwrite)
-  if not output_path then return end
-  local f = io.open(output_path, "rb")
-  if not f then return end
-  f:close()
+  if not output_path then return output_path end
+  if not file_exists(output_path) then return output_path end
+
   if not overwrite then
-    error("output_path already exists: " .. output_path
-      .. " -- pass overwrite=true to replace it, or choose a different path")
+    return next_available_path(output_path)
   end
+
   local ok, remove_err = os.remove(output_path)
   if not ok then
     -- Don't silently proceed: if deletion failed (e.g. the file is locked
@@ -296,6 +330,7 @@ local function prepare_render_output(output_path, overwrite)
     error("could not delete existing output_path before render: " .. output_path
       .. " (" .. tostring(remove_err) .. ") -- it may be open/locked by another process")
   end
+  return output_path
 end
 
 ----------------------------------------------------------------------------
@@ -481,6 +516,15 @@ ops.compose_and_render = function(args)
   local tr = get_track(idx)
   if args.track_name then reaper.GetSetMediaTrackInfo_String(tr, "P_NAME", args.track_name, true) end
 
+  -- MIDI notes are silent without a virtual instrument on the track --
+  -- neither live playback nor a render produces audible sound otherwise.
+  -- Default on for a new track (that's the whole point of "compose and
+  -- render": get audio out), auto_instrument=false opts out for callers
+  -- who want to add their own instrument/FX chain before rendering.
+  if args.auto_instrument ~= false and reaper.TrackFX_GetInstrument(tr) == -1 then
+    reaper.TrackFX_AddByName(tr, "ReaSynth", false, -1)
+  end
+
   local notes = args.notes or {}
   local max_end = 0
   for _, n in ipairs(notes) do
@@ -494,9 +538,10 @@ ops.compose_and_render = function(args)
   end
   reaper.MIDI_Sort(reaper.GetActiveTake(item))
 
+  local actual_output_path = args.output_path
   if args.output_path then
-    prepare_render_output(args.output_path, args.overwrite)
-    reaper.GetSetProjectInfo_String(0, "RENDER_FILE", args.output_path, true)
+    actual_output_path = prepare_render_output(args.output_path, args.overwrite)
+    reaper.GetSetProjectInfo_String(0, "RENDER_FILE", actual_output_path, true)
   end
   set_render_bounds(0, item_end)
   -- 42230 (not 41824): "using the most recent render settings, auto-close
@@ -508,7 +553,7 @@ ops.compose_and_render = function(args)
   -- unreachable, not just slow, until someone dismisses it by hand.
   reaper.Main_OnCommand(42230, 0)
 
-  return { track_index = idx, render_end_sec = item_end }
+  return { track_index = idx, render_end_sec = item_end, output_path = actual_output_path }
 end
 
 -- markers / regions
@@ -556,9 +601,10 @@ ops.project_save = function(args) reaper.Main_SaveProject(0, false) return {} en
 ops.project_undo = function(args) reaper.Main_OnCommand(40029, 0) return {} end
 
 ops.render_project = function(args)
+  local actual_output_path = args.output_path
   if args.output_path then
-    prepare_render_output(args.output_path, args.overwrite)
-    reaper.GetSetProjectInfo_String(0, "RENDER_FILE", args.output_path, true)
+    actual_output_path = prepare_render_output(args.output_path, args.overwrite)
+    reaper.GetSetProjectInfo_String(0, "RENDER_FILE", actual_output_path, true)
   end
   if args.start_sec ~= nil and args.end_sec ~= nil then
     set_render_bounds(args.start_sec, args.end_sec)
@@ -576,7 +622,7 @@ ops.render_project = function(args)
   -- script's defer() loop along with it -- the bridge goes fully
   -- unreachable, not just slow, until someone dismisses it by hand.
   reaper.Main_OnCommand(42230, 0)
-  return {}
+  return { output_path = actual_output_path }
 end
 
 ----------------------------------------------------------------------------
