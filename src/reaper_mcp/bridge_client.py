@@ -11,6 +11,14 @@ reaper.GetResourcePath()):
     <bridge_dir>/requests/req_<id>.json
     <bridge_dir>/responses/resp_<id>.json
     <bridge_dir>/heartbeat.txt   (touched every tick the bridge script is alive)
+
+<id> is scoped per BridgeClient instance (a short random client_id plus a
+per-instance counter), not just a bare counter - REAPER only expects one
+active client, but nothing stops two MCP server processes (e.g. Claude Code
+and Claude Desktop both configured against the same REAPER instance) from
+connecting at once. A bare "1, 2, 3..." counter would let both processes
+write req_1.json at the same time and read each other's responses; the
+client_id prefix keeps every process's request/response filenames disjoint.
 """
 
 from __future__ import annotations
@@ -20,6 +28,7 @@ import json
 import os
 import tempfile
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -63,6 +72,7 @@ class BridgeClient:
 
     def __init__(self, config: BridgeConfig | None = None):
         self.config = config or BridgeConfig()
+        self._client_id = uuid.uuid4().hex[:8]
         self._id_counter = itertools.count(1)
 
     @property
@@ -115,7 +125,7 @@ class BridgeClient:
             )
 
         self.requests_dir.mkdir(parents=True, exist_ok=True)
-        req_id = next(self._id_counter)
+        req_id = f"{self._client_id}-{next(self._id_counter)}"
         payload = json.dumps({"id": req_id, "op": op, "args": args})
         self._write_atomic(self.requests_dir / f"req_{req_id}.json", payload)
 

@@ -6,8 +6,10 @@ Read that file first when picking up work here in a new conversation.
 
 ## Claude Code specific notes
 
-- This repo has no CI configured yet - `uv run pytest` is the only
-  automated check; there is nothing else to wait on before merging.
+- CI runs `uv run pytest` on push/PR to `main` via
+  `.github/workflows/ci.yml` (windows-latest, matching the project's
+  primary target). Check `gh pr checks` before merging if CI has had time
+  to run; `uv run pytest` locally is still the faster loop while iterating.
 - The MCP server itself (`uv run reaper-mcp`) is stdio-based and blocks
   waiting for a client - that's expected behavior, not a hang, when run
   directly rather than through a client like Claude Code/Desktop.

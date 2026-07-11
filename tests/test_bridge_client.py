@@ -76,3 +76,19 @@ def test_probe(mock_bridge, tmp_path):
 
     dead_client = BridgeClient(BridgeConfig(bridge_dir=tmp_path / "dead"))
     assert dead_client.probe() is False
+
+
+def test_concurrent_clients_do_not_collide_on_request_ids(mock_bridge):
+    """Two BridgeClient instances (e.g. Claude Code and Claude Desktop both
+    connected to the same REAPER instance) must not write the same
+    req_<id>.json filename, or one process could consume the other's
+    response."""
+    client_a = BridgeClient(BridgeConfig(bridge_dir=mock_bridge.bridge_dir))
+    client_b = BridgeClient(BridgeConfig(bridge_dir=mock_bridge.bridge_dir))
+
+    assert client_a._client_id != client_b._client_id
+
+    result_a = client_a.call("ping")
+    result_b = client_b.call("ping")
+    assert result_a == {"pong": True}
+    assert result_b == {"pong": True}
