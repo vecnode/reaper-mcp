@@ -109,6 +109,15 @@ Full walkthrough in [README.md](README.md#testing-it-end-to-end).
   added, then removed at the user's request - it's a status panel, not a
   control surface, and REAPER's own transport is always available. Don't
   re-add UI controls to this window without it being explicitly requested.
+- **Render "overwrite" is opt-in, not automatic**: `render_project`/
+  `compose_and_render` render to an existing `output_path` without asking
+  only when `overwrite=true` is passed. An earlier version silently deleted
+  any pre-existing file at `output_path` on every render call to dodge
+  REAPER's blocking "overwrite?" dialog (another modal that freezes the
+  bridge while open, same as the missing-render-settings dialog) - that was
+  a standing, unbounded deletion mechanism with no confirmation, correctly
+  flagged and reverted. Don't reintroduce silent file deletion as a
+  workaround for a REAPER dialog; require explicit opt-in instead.
 
 ## Conventions for this repo
 

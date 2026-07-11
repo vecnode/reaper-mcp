@@ -268,6 +268,36 @@ local function set_render_bounds(start_sec, end_sec)
   reaper.GetSetProjectInfo(0, "RENDER_ENDPOS", end_sec, true)
 end
 
+-- If output_path already exists, REAPER's render action prompts an
+-- "overwrite?" dialog -- another modal that blocks this script's defer()
+-- loop the same way the missing-render-settings dialog did (see 42230
+-- comment below), with no way for this script to detect or dismiss it
+-- once open (the script itself is frozen while it's showing). Rather than
+-- silently deleting whatever's at output_path on every render call (a
+-- standing, unbounded destructive default), this only deletes the existing
+-- file when the caller explicitly passes overwrite=true; otherwise it
+-- errors clearly so the caller picks a different path or opts in.
+local function prepare_render_output(output_path, overwrite)
+  if not output_path then return end
+  local f = io.open(output_path, "rb")
+  if not f then return end
+  f:close()
+  if not overwrite then
+    error("output_path already exists: " .. output_path
+      .. " -- pass overwrite=true to replace it, or choose a different path")
+  end
+  local ok, remove_err = os.remove(output_path)
+  if not ok then
+    -- Don't silently proceed: if deletion failed (e.g. the file is locked
+    -- by another process, or a previous interrupted render), REAPER's
+    -- render would still find it there and show its own blocking
+    -- "overwrite?" dialog anyway -- surfacing the real reason here instead
+    -- is strictly better than that.
+    error("could not delete existing output_path before render: " .. output_path
+      .. " (" .. tostring(remove_err) .. ") -- it may be open/locked by another process")
+  end
+end
+
 ----------------------------------------------------------------------------
 -- Op handlers: op name -> function(args) -> result table
 ----------------------------------------------------------------------------
@@ -465,10 +495,18 @@ ops.compose_and_render = function(args)
   reaper.MIDI_Sort(reaper.GetActiveTake(item))
 
   if args.output_path then
+    prepare_render_output(args.output_path, args.overwrite)
     reaper.GetSetProjectInfo_String(0, "RENDER_FILE", args.output_path, true)
   end
   set_render_bounds(0, item_end)
-  reaper.Main_OnCommand(41824, 0) -- File: Render project, using the most recent render settings
+  -- 42230 (not 41824): "using the most recent render settings, auto-close
+  -- render dialog" -- verified via REAPER action list research. Without
+  -- auto-close, the render dialog can stay open waiting for a manual Close
+  -- click (most reliably on a project's first-ever render, before any
+  -- render settings exist), which blocks REAPER's main thread and this
+  -- script's defer() loop along with it -- the bridge goes fully
+  -- unreachable, not just slow, until someone dismisses it by hand.
+  reaper.Main_OnCommand(42230, 0)
 
   return { track_index = idx, render_end_sec = item_end }
 end
@@ -519,6 +557,7 @@ ops.project_undo = function(args) reaper.Main_OnCommand(40029, 0) return {} end
 
 ops.render_project = function(args)
   if args.output_path then
+    prepare_render_output(args.output_path, args.overwrite)
     reaper.GetSetProjectInfo_String(0, "RENDER_FILE", args.output_path, true)
   end
   if args.start_sec ~= nil and args.end_sec ~= nil then
@@ -529,7 +568,14 @@ ops.render_project = function(args)
     -- not have been configured at all on a fresh install).
     set_render_bounds(0, reaper.GetProjectLength(0))
   end
-  reaper.Main_OnCommand(41824, 0) -- File: Render project, using the most recent render settings
+  -- 42230 (not 41824): "using the most recent render settings, auto-close
+  -- render dialog" -- verified via REAPER action list research. Without
+  -- auto-close, the render dialog can stay open waiting for a manual Close
+  -- click (most reliably on a project's first-ever render, before any
+  -- render settings exist), which blocks REAPER's main thread and this
+  -- script's defer() loop along with it -- the bridge goes fully
+  -- unreachable, not just slow, until someone dismisses it by hand.
+  reaper.Main_OnCommand(42230, 0)
   return {}
 end
 

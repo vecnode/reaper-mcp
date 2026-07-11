@@ -19,6 +19,7 @@ def compose_and_render(
     output_path: str,
     notes: list[dict],
     track_name: str = "Composed",
+    overwrite: bool = False,
 ) -> dict:
     """Create a new track, write a MIDI melody to it from a note list, and
     render it to an audio file, in one call. Each note in notes is a dict:
@@ -28,10 +29,15 @@ def compose_and_render(
     item (which spans 0 to the last note's end_sec + 0.5s tail). Returns
     the new track_index and render_end_sec.
 
+    If output_path already exists, this errors instead of rendering unless
+    overwrite=True is passed - REAPER would otherwise show a blocking
+    "overwrite?" dialog with no way to detect or dismiss it from here.
+
     Audio format/codec (WAV, MP3, bit depth, etc.) is NOT set by this tool -
     it comes from REAPER's currently configured render settings. Use
     File -> Render once in REAPER to set the format you want; this tool
-    only controls the notes, the render time range, and the output path.
+    only controls the notes, the render time range, the output path, and
+    overwrite behavior.
     """
     return call_bridge(
         "compose_and_render",
@@ -39,4 +45,5 @@ def compose_and_render(
         output_path=output_path,
         notes=notes,
         track_name=track_name,
+        overwrite=overwrite,
     )

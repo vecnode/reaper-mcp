@@ -36,11 +36,12 @@ ReaScript. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
    build_and_install.bat
    ```
    This runs `uv sync`, copies `lua/reaper_bridge.lua` into your REAPER
-   `Scripts` folder, and wires it into REAPER's native `__startup.lua` (so it
-   auto-runs on every future REAPER launch - see "Auto-start" below), then
-   exits - it does not start or hold open an MCP server itself. Claude
-   Code/Desktop launches `uv run reaper-mcp` on its own per `.mcp.json` (step
-   3), so nothing here needs to be left running.
+   `Scripts` folder, and wires it into REAPER's native `__startup.lua` so it
+   auto-runs on every future REAPER launch (idempotent, non-destructive -
+   see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how), then exits -
+   it does not start or hold open an MCP server itself. Claude Code/Desktop
+   launches `uv run reaper-mcp` on its own per `.mcp.json` (step 3), so
+   nothing here needs to be left running.
 2. If REAPER is **already open**, the startup hook won't retroactively start
    it this session - either fully quit and reopen REAPER, or load it once
    manually: **Actions -> Show action list -> New action -> Load ReaScript...**,
@@ -59,45 +60,10 @@ ReaScript. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
    }
    ```
 
-## Testing it end to end
-
-1. **Open REAPER** and load+run `reaper_bridge.lua` as described above (step 2
-   in Setup). Confirm the "reaper-mcp" status window appears.
-2. **Confirm the bridge is actually reachable**, independent of the MCP
-   server, with the CLI diagnostics command:
-   ```
-   uv run reaper-mcp --status
-   ```
-   With REAPER open and the bridge script running, `bridge_reachable` should
-   be `true` and `running_processes` should list REAPER's PID. If it's
-   `false`, the bridge script either isn't loaded/running in REAPER, or
-   REAPER's resource path doesn't match what was detected - check `bridge_dir`
-   in the output against the folder the `.lua` file actually got copied to.
-3. **Wire it into Claude** using the `.mcp.json`/Claude Desktop config snippet
-   above, then restart Claude Code/Desktop. It spawns `uv run reaper-mcp`
-   itself over stdio and keeps it running for the session - nothing to start
-   manually.
-4. **Exercise it from Claude**: ask it to call `reaper_status` first (sanity
-   check), then something with a visible effect in REAPER, e.g. "add a track
-   named Test" (`track_add`) or "play" (`transport_play`), and confirm REAPER
-   actually reacts. `track_list` is a good read-only check if you want to
-   confirm state without changing anything.
-
 If a tool call errors with "bridge heartbeat not found or stale", the bridge
 script isn't currently running in REAPER (REAPER was closed, the script was
-stopped, or it crashed) - reload/rerun it via the Actions list, or confirm
-the `__startup.lua` hook is in place (see "Auto-start" below).
-
-## Auto-start (no more manual "run it every session")
-
-`build_and_install.bat` (and `uv run reaper-mcp --install-bridge`) wire the
-bridge into REAPER's native `__startup.lua` file - a script REAPER runs
-automatically at launch, no extension required. This is done idempotently
-and non-destructively: our addition lives inside marker comments
-(`-- reaper-mcp:start` / `-- reaper-mcp:end`) inside `__startup.lua`, so any
-of your own startup script content in that file is preserved and only our
-block gets updated on reinstall. Takes effect on REAPER's *next* launch -
-fully quit and reopen REAPER to see it, not just close/reopen a project.
+stopped, or it crashed) - reload/rerun it via the Actions list, or reinstall
+via `build_and_install.bat` and fully restart REAPER.
 
 ## Status window
 
@@ -166,6 +132,13 @@ instead of trusting whatever range REAPER's render dialog last had
 configured, which previously meant a fresh REAPER install could render the
 wrong length or fail outright.
 
+**If `output_path` already exists, both tools error instead of rendering**
+unless you pass `overwrite=true`. REAPER would otherwise show a blocking
+"overwrite?" dialog - and since that's a modal dialog, the bridge's own
+polling loop is frozen while it's open, so there's no way for either tool
+to detect or dismiss it once it appears. Passing `overwrite=true` deletes
+the existing file first so the prompt never has a reason to show up.
+
 **Audio format (WAV, MP3, bit depth, etc.) is not set by either tool** -
 REAPER's render-format setting is a base64-encoded binary value, not a
 plain string, and isn't safe to set without a verified reference encoding.
@@ -181,4 +154,4 @@ uv run pytest
 
 ## License
 
-Licensed under the MIT License.
+Licensed under the [MIT License](LICENSE).
