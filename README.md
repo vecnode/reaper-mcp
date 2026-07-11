@@ -1,10 +1,16 @@
 # reaper-mcp
 
+[![CI](https://github.com/vecnode/reaper-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/vecnode/reaper-mcp/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
+
 A comprehensive MCP for the Reaper Digital Audio Workstation (DAW).
 
 It connects Claude to a live, running REAPER instance - controlling
 transport, tracks, FX, MIDI, and rendering - and adds a small status
 window directly in REAPER's own native UI.
+
+![reaper-mcp status window docked in REAPER, showing a composed MIDI melody](docs/images/reaper-mcp-screenshot.png)
 
 ## Architecture
 
