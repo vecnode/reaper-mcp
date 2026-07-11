@@ -16,11 +16,20 @@
  No REAPER extensions required -- this uses only the standard io/os Lua
  libraries and the reaper.* API, both available in vanilla ReaScript.
 
+ Also draws a small "MCP" status window (via REAPER's built-in gfx library)
+ in the same defer() loop, showing whether the bridge has processed a
+ request recently. This is honest about what it can show: since this is
+ file-polling IPC, not a live socket, it reflects "bridge script is
+ running" and "last request seen Ns ago" -- not a persistent "Claude is
+ attached right now" signal, since MCP clients only connect when actively
+ calling a tool.
+
  Install: copy this file into REAPER's Scripts folder (or let
- `uv run reaper-mcp --install-bridge` do it for you), then in REAPER:
-   Actions -> Show action list -> New action -> Load ReaScript... -> select
-   this file -> Run. Optionally right-click it in the action list and choose
-   "Run on startup" so the bridge is always live.
+ `uv run reaper-mcp --install-bridge` do it for you, which also wires up
+ REAPER's native __startup.lua so this runs automatically on every REAPER
+ launch -- no manual Actions-list step needed after the first install).
+ Manual load, if you ever need it: Actions -> Show action list -> New
+ action -> Load ReaScript... -> select this file -> Run.
 --]]
 
 local SEP = package.config:sub(1, 1)
@@ -403,6 +412,17 @@ ops.view_set_arrange_zoom = function(args)
   return {}
 end
 
+-- native/custom actions (transport, toggles like snap, ripple edit, etc.)
+ops.action_run = function(args)
+  reaper.Main_OnCommand(args.command_id, args.section or 0)
+  return {}
+end
+
+ops.action_get_state = function(args)
+  local state = reaper.GetToggleCommandStateEx(args.section or 0, args.command_id)
+  return { state = state }
+end
+
 -- project
 ops.project_save = function(args) reaper.Main_SaveProject(0, false) return {} end
 ops.project_undo = function(args) reaper.Main_OnCommand(40029, 0) return {} end
@@ -422,6 +442,14 @@ end
 local function log(msg)
   reaper.ShowConsoleMsg("[reaper_mcp] " .. tostring(msg) .. "\n")
 end
+
+-- status window state: tracks bridge activity, not a live "Claude is
+-- attached" signal -- this is file-polling IPC, so the most honest thing we
+-- can show is "the bridge script is running" and "a request was last seen
+-- N seconds ago", not a persistent connection state.
+local last_request_time = nil
+local request_count = 0
+local gfx_initialized = false
 
 local function ensure_dirs()
   reaper.RecursiveCreateDirectory(REQUESTS_DIR, 0)
@@ -474,6 +502,9 @@ local function process_one_request(filename)
     resp = handle_request(req)
   end
 
+  last_request_time = reaper.time_precise()
+  request_count = request_count + 1
+
   -- filename convention: req_<id>.json -> resp_<id>.json
   local id_part = filename:match("^req_(.+)%.json$") or filename
   write_file_atomic(RESPONSES_DIR .. SEP .. "resp_" .. id_part .. ".json", json.encode(resp))
@@ -494,9 +525,59 @@ local function pump()
   end
 end
 
+----------------------------------------------------------------------------
+-- Status window (gfx), same defer loop as the IPC pump above
+----------------------------------------------------------------------------
+
+local STATUS_ACTIVE_WINDOW_SEC = 3.0
+
+local function draw_status_window()
+  if not gfx_initialized then
+    local saved_dock = tonumber(reaper.GetExtState("reaper_mcp", "gfx_dock")) or 0
+    gfx.init("reaper-mcp", 160, 50, saved_dock)
+    gfx_initialized = true
+  end
+
+  local char = gfx.getchar()
+  if char < 0 then
+    -- user closed the window; the IPC pump keeps running regardless
+    gfx.quit()
+    gfx_initialized = false
+    return
+  end
+
+  local dock = gfx.dock(-1)
+  reaper.SetExtState("reaper_mcp", "gfx_dock", tostring(dock), true)
+
+  local active = last_request_time ~= nil
+    and (reaper.time_precise() - last_request_time) < STATUS_ACTIVE_WINDOW_SEC
+
+  gfx.set(0.15, 0.15, 0.15)
+  gfx.rect(0, 0, gfx.w, gfx.h, 1)
+
+  if active then
+    gfx.set(0.2, 0.85, 0.3)
+  else
+    gfx.set(0.55, 0.55, 0.55)
+  end
+  gfx.rect(4, 4, gfx.w - 8, gfx.h - 8, 1)
+
+  gfx.set(0, 0, 0)
+  gfx.x, gfx.y = 12, 10
+  gfx.drawstr("MCP")
+  gfx.x, gfx.y = 12, 28
+  gfx.drawstr((active and "Bridge: Active" or "Bridge: Idle") .. "  (" .. tostring(request_count) .. ")")
+
+  gfx.update()
+end
+
 local function main_loop()
   local ok, err = pcall(pump)
   if not ok then log("error: " .. tostring(err)) end
+
+  local gfx_ok, gfx_err = pcall(draw_status_window)
+  if not gfx_ok then log("status window error: " .. tostring(gfx_err)) end
+
   reaper.defer(main_loop)
 end
 

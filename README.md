@@ -35,12 +35,16 @@ ReaScript. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
    build_and_run.bat
    ```
    This runs `uv sync`, copies `lua/reaper_bridge.lua` into your REAPER
-   `Scripts` folder, and starts the MCP server over stdio.
-2. In REAPER: **Actions -> Show action list -> New action -> Load ReaScript...**,
+   `Scripts` folder, wires it into REAPER's native `__startup.lua` (so it
+   auto-runs on every future REAPER launch - see "Auto-start" below), and
+   starts the MCP server over stdio.
+2. If REAPER is **already open**, the startup hook won't retroactively start
+   it this session - either fully quit and reopen REAPER, or load it once
+   manually: **Actions -> Show action list -> New action -> Load ReaScript...**,
    select `reaper_bridge.lua`, then **Run** it. You should see
    `[reaper_mcp] reaper_bridge starting, watching ...` in REAPER's console
-   (Extensions -> ReaScript console). Right-click the action and choose
-   **"Run on startup"** if you want the bridge always live.
+   (Extensions -> ReaScript console), and a small "MCP" status window should
+   appear (see "Status window" below).
 3. Point Claude Code (or Claude Desktop) at the server. Example
    `.mcp.json` / `claude_desktop_config.json` entry:
    ```json
@@ -84,7 +88,34 @@ ReaScript. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
 
 If a tool call errors with "bridge heartbeat not found or stale", the bridge
 script isn't currently running in REAPER (REAPER was closed, the script was
-stopped, or it crashed) - reload/rerun it via the Actions list.
+stopped, or it crashed) - reload/rerun it via the Actions list, or confirm
+the `__startup.lua` hook is in place (see "Auto-start" below).
+
+## Auto-start (no more manual "run it every session")
+
+`build_and_run.bat` (and `uv run reaper-mcp --install-bridge`) wire the
+bridge into REAPER's native `__startup.lua` file - a script REAPER runs
+automatically at launch, no extension required. This is done idempotently
+and non-destructively: our addition lives inside marker comments
+(`-- reaper-mcp:start` / `-- reaper-mcp:end`) inside `__startup.lua`, so any
+of your own startup script content in that file is preserved and only our
+block gets updated on reinstall. Takes effect on REAPER's *next* launch -
+fully quit and reopen REAPER to see it, not just close/reopen a project.
+
+## Status window
+
+Once the bridge is running, a small "MCP" window appears in REAPER (dockable
+- drag it into REAPER's docker like any other panel, and it remembers
+whether you left it docked or floating across restarts). It shows:
+- Green **"Bridge: Active"** if a request was processed in the last ~3 seconds
+- Gray **"Bridge: Idle"** otherwise, plus a running request count
+
+Honest caveat: because this is file-polling IPC rather than a persistent
+socket, the window can only reflect "the bridge script is running" and "a
+request was last seen N seconds ago" - it is **not** a live "Claude is
+connected right now" indicator, since an MCP client only reaches out when
+actively calling a tool. Closing the window doesn't stop the bridge itself;
+REAPER control keeps working either way.
 
 ## Tool overview
 
@@ -98,6 +129,7 @@ stopped, or it crashed) - reload/rerun it via the Actions list.
 | Items | `item_split/move/glue_selected/render_in_place_selected` |
 | Markers | `marker_add`, `region_add` |
 | View | `view_zoom_to_selection`, `view_scroll_to`, `view_set_arrange_zoom` |
+| Actions | `action_run(command_id)`, `action_get_toggle_state(command_id)` - drive any native UI toggle (snap, ripple edit, etc.) or custom action; look up `command_id` via REAPER's Actions list ("Copy selected action ID") |
 | Project | `project_save`, `project_undo` |
 | Render | `render_project` |
 | Escape hatch | `run_reascript(code)` - arbitrary ReaScript Lua |
