@@ -541,11 +541,20 @@ local STATUS_ACTIVE_WINDOW_SEC = 3.0
 -- layout -- there's no reliable numeric ID for a specific screen corner, so
 -- this is a starting point, not a guaranteed position. Drag it to your
 -- preferred docker once; DOCK_STATE_KEY below remembers that choice.
+--
+-- Uses a "_v2" key deliberately: earlier versions defaulted to floating
+-- (dock state 0) and saved that back to ExtState. `tonumber("0") or
+-- DEFAULT` evaluates to 0, not DEFAULT, because 0 is truthy in Lua -- so a
+-- stale "0" from before this fix would silently keep overriding the new
+-- docked default forever. Switching keys resets that stale value once;
+-- the empty-string check below prevents the same bug from recurring.
 local DEFAULT_DOCK_STATE = 1
+local DOCK_STATE_KEY = "gfx_dock_v2"
 
 local function draw_status_window()
   if not gfx_initialized then
-    local saved_dock = tonumber(reaper.GetExtState("reaper_mcp", "gfx_dock")) or DEFAULT_DOCK_STATE
+    local raw_dock = reaper.GetExtState("reaper_mcp", DOCK_STATE_KEY)
+    local saved_dock = (raw_dock ~= "" and tonumber(raw_dock)) or DEFAULT_DOCK_STATE
     gfx.init("reaper-mcp", 160, 50, saved_dock)
     gfx_initialized = true
   end
@@ -559,7 +568,7 @@ local function draw_status_window()
   end
 
   local dock = gfx.dock(-1)
-  reaper.SetExtState("reaper_mcp", "gfx_dock", tostring(dock), true)
+  reaper.SetExtState("reaper_mcp", DOCK_STATE_KEY, tostring(dock), true)
 
   local active = last_request_time ~= nil
     and (reaper.time_precise() - last_request_time) < STATUS_ACTIVE_WINDOW_SEC

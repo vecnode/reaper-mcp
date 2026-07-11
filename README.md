@@ -1,14 +1,15 @@
 # reaper-mcp
 
-An MCP server that lets Claude drive a **live, running REAPER DAW instance** -
-transport control, tracks, FX/plugins, MIDI, media items, markers, view/zoom,
-rendering, and project state - plus a `run_reascript` escape hatch for
-anything not covered by a dedicated tool.
+A comprehensive MCP for the Reaper Digital Audio Workstation (DAW).
 
-Unlike file-parsing REAPER integrations, this talks to REAPER while it's
-running, and includes an engineer-style discovery layer that finds your
-REAPER install(s), the running REAPER process (with PID), and whether the
-bridge is actually reachable - so failures are diagnosable, not silent.
+It connects Claude to a live, running REAPER instance for direct control of
+transport, tracks, FX/plugins, MIDI, media items, markers, view/zoom,
+rendering, project state, and native UI actions, with a `run_reascript`
+escape hatch for anything not covered by a dedicated tool. Unlike
+integrations that only read project files, this operates on REAPER while
+it's running, and includes a discovery layer that locates REAPER
+installs, the running REAPER process (with PID), and bridge reachability,
+so failures are diagnosable rather than silent.
 
 ## Architecture
 
