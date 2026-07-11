@@ -224,7 +224,12 @@ json.decode = json_decode
 ----------------------------------------------------------------------------
 
 local function get_track(idx)
-  -- 0-based track index, matching ReaScript convention
+  -- 0-based track index, matching ReaScript convention. -1 is a sentinel
+  -- for the master track (reaper.GetTrack(0, -1) is not the master and
+  -- would just fail) -- this makes every track-taking op (fx_add, fx_list,
+  -- track_set_volume_db, etc.) usable against the master bus for free by
+  -- passing track_index=-1, not just the ops that specifically need it.
+  if idx == -1 then return reaper.GetMasterTrack(0) end
   return reaper.GetTrack(0, math.floor(idx))
 end
 
@@ -232,6 +237,22 @@ local function track_or_error(args)
   local tr = get_track(args.track_index or 0)
   if not tr then error("no track at index " .. tostring(args.track_index)) end
   return tr
+end
+
+-- Safety net: ensures the master bus has a limiter (ReaLimit, REAPER's
+-- built-in true-peak brickwall limiter) so nothing rendered/played can blow
+-- out headphones/speakers. Checked/added on the MASTER only, not per-track
+-- -- one limiter at the end of the final mix, not one per track. Idempotent:
+-- scans the master's existing FX chain for a name containing "ReaLimit"
+-- before adding, so calling this repeatedly (e.g. once per new track) never
+-- stacks duplicate limiters.
+local function ensure_master_limiter()
+  local master = reaper.GetMasterTrack(0)
+  for i = 0, reaper.TrackFX_GetCount(master) - 1 do
+    local _, name = reaper.TrackFX_GetFXName(master, i, "")
+    if name:find("ReaLimit") then return end
+  end
+  reaper.TrackFX_AddByName(master, "ReaLimit", false, -1)
 end
 
 local function find_item_at_start(tr, start_sec)
@@ -383,6 +404,7 @@ ops.track_add = function(args)
   reaper.InsertTrackAtIndex(idx, true)
   local tr = get_track(idx)
   if args.name then reaper.GetSetMediaTrackInfo_String(tr, "P_NAME", args.name, true) end
+  if args.auto_limiter ~= false then ensure_master_limiter() end
   return { index = idx }
 end
 
@@ -515,6 +537,7 @@ ops.compose_and_render = function(args)
   reaper.InsertTrackAtIndex(idx, true)
   local tr = get_track(idx)
   if args.track_name then reaper.GetSetMediaTrackInfo_String(tr, "P_NAME", args.track_name, true) end
+  if args.auto_limiter ~= false then ensure_master_limiter() end
 
   -- MIDI notes are silent without a virtual instrument on the track --
   -- neither live playback nor a render produces audible sound otherwise.

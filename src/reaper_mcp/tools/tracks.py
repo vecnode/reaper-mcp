@@ -6,10 +6,18 @@ from ..app import call_bridge, mcp
 
 
 @mcp.tool()
-def track_add(name: str | None = None, index: int | None = None) -> dict:
+def track_add(name: str | None = None, index: int | None = None, auto_limiter: bool = True) -> dict:
     """Insert a new track, optionally at a specific 0-based index (default: end of
-    track list) and with a given name."""
-    kwargs = {}
+    track list) and with a given name.
+
+    By default (auto_limiter=True), also ensures the master bus has a
+    limiter (REAPER's built-in ReaLimit) so nothing played/rendered can
+    blow out headphones/speakers - added once, not duplicated on repeated
+    calls. Pass auto_limiter=False to skip this. Master's FX chain (and
+    volume, etc.) can be inspected/adjusted directly by passing
+    track_index=-1 to fx_list/fx_add/track_set_volume_db/etc.
+    """
+    kwargs: dict = {"auto_limiter": auto_limiter}
     if index is not None:
         kwargs["index"] = index
     if name is not None:
