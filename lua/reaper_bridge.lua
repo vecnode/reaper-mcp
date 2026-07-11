@@ -17,12 +17,17 @@
  libraries and the reaper.* API, both available in vanilla ReaScript.
 
  Also draws a small "MCP" status window (via REAPER's built-in gfx library)
- in the same defer() loop, showing whether the bridge has processed a
- request recently. This is honest about what it can show: since this is
- file-polling IPC, not a live socket, it reflects "bridge script is
- running" and "last request seen Ns ago" -- not a persistent "Claude is
- attached right now" signal, since MCP clients only connect when actively
- calling a tool.
+ in the same defer() loop, docked by default, showing whether the bridge
+ has processed a request recently. This is honest about what it can show:
+ since this is file-polling IPC, not a live socket, it reflects "bridge
+ script is running" and "last request seen Ns ago" -- not a persistent
+ "Claude is attached right now" signal, since MCP clients only connect when
+ actively calling a tool. Drag it to whichever docker position you prefer;
+ that position is remembered across REAPER restarts.
+
+ Does not call reaper.ShowConsoleMsg() on routine startup (that forces the
+ ReaScript console open, disruptive now that this auto-runs via
+ __startup.lua on every launch) -- only on real pump/gfx errors.
 
  Install: copy this file into REAPER's Scripts folder (or let
  `uv run reaper-mcp --install-bridge` do it for you, which also wires up
@@ -531,9 +536,16 @@ end
 
 local STATUS_ACTIVE_WINDOW_SEC = 3.0
 
+-- Default to docked (bit0=1, docker index 0) rather than floating. Which
+-- physical docker "index 0" lands in depends on the user's REAPER docker
+-- layout -- there's no reliable numeric ID for a specific screen corner, so
+-- this is a starting point, not a guaranteed position. Drag it to your
+-- preferred docker once; DOCK_STATE_KEY below remembers that choice.
+local DEFAULT_DOCK_STATE = 1
+
 local function draw_status_window()
   if not gfx_initialized then
-    local saved_dock = tonumber(reaper.GetExtState("reaper_mcp", "gfx_dock")) or 0
+    local saved_dock = tonumber(reaper.GetExtState("reaper_mcp", "gfx_dock")) or DEFAULT_DOCK_STATE
     gfx.init("reaper-mcp", 160, 50, saved_dock)
     gfx_initialized = true
   end
@@ -581,5 +593,10 @@ local function main_loop()
   reaper.defer(main_loop)
 end
 
-log("reaper_mcp bridge starting, watching " .. REQUESTS_DIR)
+-- Deliberately not calling log() here: reaper.ShowConsoleMsg() forces
+-- REAPER's ReaScript console window open, which is disruptive on every
+-- single REAPER launch now that this runs via __startup.lua. The status
+-- window is the intended way to confirm the bridge is running; log() is
+-- reserved for real errors below (pump/gfx failures), where popping the
+-- console open is actually useful.
 main_loop()

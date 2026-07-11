@@ -104,11 +104,29 @@ fully quit and reopen REAPER to see it, not just close/reopen a project.
 
 ## Status window
 
-Once the bridge is running, a small "MCP" window appears in REAPER (dockable
-- drag it into REAPER's docker like any other panel, and it remembers
-whether you left it docked or floating across restarts). It shows:
+Once the bridge is running, a small "MCP" window appears in REAPER, **docked
+by default** (not floating). It shows:
 - Green **"Bridge: Active"** if a request was processed in the last ~3 seconds
 - Gray **"Bridge: Idle"** otherwise, plus a running request count
+
+The bridge doesn't try to guess a pixel-precise screen position - REAPER's
+dockers are separate panel regions (like where the Mixer docks), not
+overlays on the native toolbar, so there's no reliable way to place it
+"on top of" a specific toolbar button. Drag it once to whichever docker
+position you prefer; that choice is remembered across REAPER restarts.
+The console no longer opens automatically on startup either (it only pops
+up now if the bridge or status window hits a real error).
+
+**Want REAPER itself to open in a specific layout** (no tracks, mixer
+visible, video window docked right, etc.) **every launch?** That's a better
+fit for REAPER's own built-in tools than for ReaScript: set a blank
+project as your default template (Preferences -> Project -> "Default
+project template"), arrange the windows the way you want once, then save
+that arrangement as a Screenset (View -> Screensets) set to load on
+startup. Those are native, reliable REAPER features - safer than us
+scripting window geometry blind. If you want that screenset to also load
+automatically via our `__startup.lua` hook, find its action/command ID in
+REAPER's Actions list and use the `action_run` tool to trigger it from here.
 
 Honest caveat: because this is file-polling IPC rather than a persistent
 socket, the window can only reflect "the bridge script is running" and "a
