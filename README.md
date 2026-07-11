@@ -33,19 +33,19 @@ ReaScript. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
 
 1. From this repo's root, run:
    ```
-   build_and_run.bat
+   build_and_install.bat
    ```
    This runs `uv sync`, copies `lua/reaper_bridge.lua` into your REAPER
-   `Scripts` folder, wires it into REAPER's native `__startup.lua` (so it
-   auto-runs on every future REAPER launch - see "Auto-start" below), and
-   starts the MCP server over stdio.
+   `Scripts` folder, and wires it into REAPER's native `__startup.lua` (so it
+   auto-runs on every future REAPER launch - see "Auto-start" below), then
+   exits - it does not start or hold open an MCP server itself. Claude
+   Code/Desktop launches `uv run reaper-mcp` on its own per `.mcp.json` (step
+   3), so nothing here needs to be left running.
 2. If REAPER is **already open**, the startup hook won't retroactively start
    it this session - either fully quit and reopen REAPER, or load it once
    manually: **Actions -> Show action list -> New action -> Load ReaScript...**,
-   select `reaper_bridge.lua`, then **Run** it. You should see
-   `[reaper_mcp] reaper_bridge starting, watching ...` in REAPER's console
-   (Extensions -> ReaScript console), and a small "MCP" status window should
-   appear (see "Status window" below).
+   select `reaper_bridge.lua`, then **Run** it. You should see the small
+   "reaper-mcp" status window appear (see "Status window" below).
 3. Point Claude Code (or Claude Desktop) at the server. Example
    `.mcp.json` / `claude_desktop_config.json` entry:
    ```json
@@ -62,7 +62,7 @@ ReaScript. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
 ## Testing it end to end
 
 1. **Open REAPER** and load+run `reaper_bridge.lua` as described above (step 2
-   in Setup). Confirm the console printed the "watching ..." line.
+   in Setup). Confirm the "reaper-mcp" status window appears.
 2. **Confirm the bridge is actually reachable**, independent of the MCP
    server, with the CLI diagnostics command:
    ```
@@ -73,15 +73,11 @@ ReaScript. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
    `false`, the bridge script either isn't loaded/running in REAPER, or
    REAPER's resource path doesn't match what was detected - check `bridge_dir`
    in the output against the folder the `.lua` file actually got copied to.
-3. **Run the batch file** if you haven't already:
-   ```
-   build_and_run.bat
-   ```
-   It's stdio-based, so once started it just waits for an MCP client - that's
-   expected, not a hang.
-4. **Wire it into Claude** using the `.mcp.json`/Claude Desktop config snippet
-   above, then restart Claude Code/Desktop.
-5. **Exercise it from Claude**: ask it to call `reaper_status` first (sanity
+3. **Wire it into Claude** using the `.mcp.json`/Claude Desktop config snippet
+   above, then restart Claude Code/Desktop. It spawns `uv run reaper-mcp`
+   itself over stdio and keeps it running for the session - nothing to start
+   manually.
+4. **Exercise it from Claude**: ask it to call `reaper_status` first (sanity
    check), then something with a visible effect in REAPER, e.g. "add a track
    named Test" (`track_add`) or "play" (`transport_play`), and confirm REAPER
    actually reacts. `track_list` is a good read-only check if you want to
@@ -94,7 +90,7 @@ the `__startup.lua` hook is in place (see "Auto-start" below).
 
 ## Auto-start (no more manual "run it every session")
 
-`build_and_run.bat` (and `uv run reaper-mcp --install-bridge`) wire the
+`build_and_install.bat` (and `uv run reaper-mcp --install-bridge`) wire the
 bridge into REAPER's native `__startup.lua` file - a script REAPER runs
 automatically at launch, no extension required. This is done idempotently
 and non-destructively: our addition lives inside marker comments
@@ -105,10 +101,14 @@ fully quit and reopen REAPER to see it, not just close/reopen a project.
 
 ## Status window
 
-Once the bridge is running, a small "MCP" window appears in REAPER, **docked
-by default** (not floating). It shows:
-- Green **"Bridge: Active"** if a request was processed in the last ~3 seconds
-- Gray **"Bridge: Idle"** otherwise, plus a running request count
+Once the bridge is running, a small "reaper-mcp" window appears in REAPER,
+**docked by default** (not floating). It shows:
+- **"Status: ON"** - the bridge has no on/off toggle; once loaded it runs for
+  as long as REAPER is open, independent of whether this window is open
+- Green **"Active"** if a request was processed in the last ~3 seconds, gray
+  **"Idle"** otherwise, plus a running request count
+- A quick reference list of available tool domains (Transport/Tracks/FX,
+  MIDI/Items/Compose, Markers/View/Render, Actions/Project)
 
 The bridge doesn't try to guess a pixel-precise screen position - REAPER's
 dockers are separate panel regions (like where the Mixer docks), not
@@ -146,12 +146,31 @@ REAPER control keeps working either way.
 | FX | `fx_add/remove/set_enabled/list/set_param/get_param` |
 | MIDI | `midi_add_item`, `midi_add_note` |
 | Items | `item_split/move/glue_selected/render_in_place_selected` |
+| Compose | `compose_and_render(output_path, notes, track_name)` - one call: new track + MIDI notes + render to audio (see below) |
 | Markers | `marker_add`, `region_add` |
 | View | `view_zoom_to_selection`, `view_scroll_to`, `view_set_arrange_zoom` |
 | Actions | `action_run(command_id)`, `action_get_toggle_state(command_id)` - drive any native UI toggle (snap, ripple edit, etc.) or custom action; look up `command_id` via REAPER's Actions list ("Copy selected action ID") |
 | Project | `project_save`, `project_undo` |
-| Render | `render_project` |
+| Render | `render_project(output_path, start_sec, end_sec)` - explicit time bounds by default (see below), not whatever REAPER's render dialog last had configured |
 | Escape hatch | `run_reascript(code)` - arbitrary ReaScript Lua |
+
+### Composing and rendering audio
+
+`compose_and_render` collapses the track/MIDI-item/notes/render sequence
+into one call: give it a list of notes (`{pitch, start_sec, end_sec,
+velocity?, channel?}`) and an `output_path`, and it creates the track, MIDI
+item, every note, sets the render time range to exactly match the composed
+notes, and renders. `render_project` got the same time-range hardening -
+both now default to explicit bounds (0 to the content/project length)
+instead of trusting whatever range REAPER's render dialog last had
+configured, which previously meant a fresh REAPER install could render the
+wrong length or fail outright.
+
+**Audio format (WAV, MP3, bit depth, etc.) is not set by either tool** -
+REAPER's render-format setting is a base64-encoded binary value, not a
+plain string, and isn't safe to set without a verified reference encoding.
+Open REAPER's render dialog once (File -> Render) and pick your format;
+after that, both tools will use it on every subsequent render.
 
 ## Development
 

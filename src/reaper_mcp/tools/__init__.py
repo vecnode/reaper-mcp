@@ -2,6 +2,7 @@
 
 from . import (  # noqa: F401
     actions,
+    compose,
     fx,
     items,
     markers,

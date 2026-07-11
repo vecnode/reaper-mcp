@@ -20,10 +20,11 @@ by __startup.lua on REAPER launch
     - every defer() tick: touches heartbeat.txt, scans requests/ for new
       req_*.json files, dispatches each via a lookup table (op name -> handler
       function -> reaper.* API calls), writes the JSON result to responses/
-    - includes a run_reascript op (arbitrary Lua escape hatch) and
+    - includes a run_reascript op (arbitrary Lua escape hatch),
       action_run/action_get_state ops (native UI toggles like snap, ripple
-      edit, or any custom action, by command ID)
-    - same defer() tick also draws a small "MCP" gfx status window (see below)
+      edit, or any custom action, by command ID), and compose_and_render
+      (new track + MIDI notes + render, one call)
+    - same defer() tick also draws a small "reaper-mcp" gfx status window (see below)
         │  reaper.* ReaScript API
         ▼
 REAPER DAW process
@@ -129,7 +130,7 @@ draws its own UI via `gfx` and can have its own clickable regions.
 
 ## Status window
 
-`reaper_bridge.lua` also draws a small "MCP" indicator window using
+`reaper_bridge.lua` also draws a small "reaper-mcp" indicator window using
 REAPER's built-in `gfx` Lua library (no extension), in the *same*
 `reaper.defer()` loop as the IPC pump - not a separate script, since two
 independently-loaded ReaScripts run as separate Lua VMs with no shared
@@ -138,19 +139,32 @@ state, and the window needs to see the pump's request activity directly.
 - `last_request_time` / `request_count` locals are updated in
   `process_one_request` and read by `draw_status_window`.
 - The window's docked/floating position persists across REAPER restarts via
-  `reaper.SetExtState("reaper_mcp", "gfx_dock", ...)` / `GetExtState`,
-  read back on `gfx.init`. First-ever run defaults to floating rather than
-  guessing a specific dock slot ID.
+  `reaper.SetExtState("reaper_mcp", "gfx_dock_v2", ...)` / `GetExtState`,
+  read back on `gfx.init`, defaulting to **docked** (not floating) on
+  first-ever run. The `_v2` key exists because an earlier version defaulted
+  to floating and saved that back to `ExtState`; `tonumber("0") or DEFAULT`
+  evaluates to `0` in Lua (0 is truthy, only `nil`/`false` are falsy), so a
+  stale saved `"0"` silently overrode the new docked default under the old
+  key - the key rename plus an explicit empty-string check fixed both the
+  stale-state issue and the root-cause logic bug.
 - Closing the window (`gfx.getchar() < 0`) calls `gfx.quit()` and stops
   drawing, but the IPC pump keeps running in the same `defer()` loop
   regardless - REAPER control never depends on the status window being open.
+- Below the status lines, a static (hand-maintained, not generated) list of
+  tool category groupings gives a quick at-a-glance reference of what's
+  available without needing REAPER's own Actions list.
 
 **Deliberately conservative about what "connected" means**: this is
 file-polling IPC, not a persistent socket, so there is no actual live
-connection state to report. The window shows "Bridge: Active" (a request
-was processed in the last ~3s) or "Bridge: Idle" (script running, no recent
-activity) - never "Claude: Connected", since an MCP client only reaches the
-bridge at all when actively calling a tool.
+connection state to report. "Status: ON" reflects that the bridge has no
+on/off toggle (it runs for as long as REAPER is open, once loaded), and
+separately "Active"/"Idle" reflects recent request activity - never "Claude:
+Connected", since an MCP client only reaches the bridge at all when actively
+calling a tool.
+
+No interactive buttons: an earlier iteration added Play/Stop buttons to the
+window, but they were removed as unnecessary - this is a status panel, not a
+control surface, and REAPER's own transport controls are always available.
 
 ## Auto-start via `__startup.lua`
 
@@ -168,6 +182,40 @@ that file:
   exists with foreign content, our block is appended, preserving the rest.
   If it exists with our markers already present (from a previous install),
   only the content between them is replaced - never duplicated.
-- Called automatically from `install_bridge()`, so `build_and_run.bat` alone
-  is sufficient; no separate flag or manual step. Takes effect on REAPER's
-  *next* launch, not the currently-running instance.
+- Called automatically from `install_bridge()`, so `build_and_install.bat`
+  alone is sufficient; no separate flag or manual step. Takes effect on
+  REAPER's *next* launch, not the currently-running instance.
+  `build_and_install.bat` only runs setup (sync deps, install bridge +
+  startup hook) and exits - it never starts/holds open an MCP server itself,
+  since Claude Code/Desktop spawns `uv run reaper-mcp` on its own per
+  `.mcp.json`.
+
+## Composing and rendering (`compose_and_render`)
+
+`ops.midi_add_item`/`ops.midi_add_note` are real Lua ops (not
+`run_reascript`-templated strings like an earlier version - promoted for
+consistency with every other op in this file, and so `compose_and_render`
+below can reuse their exact insertion logic via a shared local
+`insert_midi_note` helper instead of duplicating it).
+
+`ops.compose_and_render` collapses `track_add` + `midi_add_item` +
+`midi_add_note` (xN) + `render_project` into one call: it creates a track,
+one MIDI item spanning `[0, last_note.end_sec + 0.5]`, inserts every note,
+sets render bounds to match that exact range, and triggers the render.
+
+Both `compose_and_render` and the hardened `render_project` use a shared
+`set_render_bounds(start_sec, end_sec)` helper that sets
+`RENDER_BOUNDSFLAG=0` (custom time range), `RENDER_STARTPOS`, and
+`RENDER_ENDPOS` via `reaper.GetSetProjectInfo` - verified via REAPER API
+research (not asserted from memory) to be plain numeric keys. When
+`render_project` isn't given an explicit range, it defaults to `0` through
+`reaper.GetProjectLength(0)` rather than trusting whatever bounds mode/range
+REAPER's render dialog last had configured, which could otherwise render the
+wrong length (or fail) on a fresh REAPER install with no prior manual render.
+
+**`RENDER_FORMAT` (codec/bitrate) is deliberately never set anywhere in this
+file.** Research turned up that it's a base64-encoded binary fourcc value,
+not a plain string - setting it without a verified reference encoding risks
+silently corrupting the render configuration. Audio format stays whatever
+the user last configured via REAPER's own File -> Render dialog; only time
+range and output path are controlled programmatically.
