@@ -3,6 +3,10 @@
     "reaper": {
       "command": "cargo",
       "args": ["run", "--release", "-p", "dawmcp-server"]
+    },
+    "audacity": {
+      "command": "cargo",
+      "args": ["run", "--release", "-p", "dawmcp-server", "--", "--daw=audacity"]
     }
   }
 }

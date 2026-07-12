@@ -10,7 +10,11 @@ rendering, through a DAW-agnostic tool surface with a per-DAW adapter behind
 it. REAPER is the first adapter, with tool parity for transport, tracks, FX,
 MIDI, media items, markers, view/zoom, rendering, project state, native UI
 action control, `compose_and_render`, and a `run_reascript` escape hatch.
-Audacity is the next planned adapter. See [README.md](README.md) for
+Audacity is the second adapter, with transport/track/render parity (see
+"Current status" for what's still unsupported there). `dawmcp-server`
+selects which adapter to serve tools over via `--daw=reaper|audacity`
+(default `reaper`); `.mcp.json` registers both as separate MCP server
+entries so Claude can connect to either. See [README.md](README.md) for
 user-facing setup/usage and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for
 the full design writeup (the latter still describes the REAPER bridge
 protocol specifically; it predates the multi-DAW trait split and hasn't been
@@ -22,22 +26,29 @@ Rust rewrite complete for REAPER: full tool parity with the original Python
 implementation, verified against a real running REAPER instance (live
 `--install-bridge` run, live tool round-trip over stdio). The Python
 implementation (`reaper-mcp`) has been removed from the repo; `git log` has
-its history if needed. `dawmcp-audacity` exists as a scaffold: the
-`mod-script-pipe` wire protocol is implemented and verified against
-Audacity's own reference client source, but almost every `DawBackend`
-method returns `DawError::Unsupported` pending verification of exact
-command parameter names (see that crate's `backend.rs` doc comment for
-specifics), and it is **not yet wired into `dawmcp-server`'s binary** - no
-backend-selection CLI flag exists yet; `main.rs` always constructs
-`ReaperBackend`.
+its history if needed.
+
+`dawmcp-audacity` implements `DawBackend` over `mod-script-pipe`, with every
+command name and parameter key verified against Audacity's own source
+(`audacity/audacity` on GitHub - see `dawmcp-audacity/src/backend.rs`'s doc
+comment for exact file/line references), not assumed from memory. Working:
+transport (play/stop/pause/record), track add/remove/rename/list, per-track
+volume/pan/mute/solo, and render/export (`Export2`). Deliberately
+`Unsupported` because the underlying concept doesn't map cleanly (not
+because it's unverified): `transport_seek`/`transport_set_tempo`/
+`transport_get_state` (no verified playhead/tempo query), `fx_*` (Audacity
+has no persistent per-track FX chain like REAPER's), `track_set_color`
+(Audacity's colour is a small preset enum, not arbitrary RGB). `discovery.rs`
+finds Audacity installs/processes on Windows/macOS/Linux, same shape as the
+REAPER adapter's discovery, verified live on this machine.
 
 ## Architecture (short version)
 
 ```
-Claude (MCP client) --stdio--> dawmcp-server (rmcp) --> DawBackend trait --> adapter
-                                                                               |
-                                                                  dawmcp-reaper: file IPC --> reaper_bridge.lua (inside REAPER) --> reaper.* API
-                                                                  dawmcp-audacity (planned): mod-script-pipe named pipes
+Claude (MCP client) --stdio--> dawmcp-server (rmcp, --daw=reaper|audacity) --> DawBackend trait --> adapter
+                                                                                                       |
+                                                                                          dawmcp-reaper: file IPC --> reaper_bridge.lua (inside REAPER) --> reaper.* API
+                                                                                          dawmcp-audacity: mod-script-pipe named pipes/FIFOs --> Audacity
 ```
 
 - `dawmcp-core` defines DAW-agnostic traits (`Transport`, `Tracks`, `Fx`,
@@ -92,7 +103,10 @@ Claude (MCP client) --stdio--> dawmcp-server (rmcp) --> DawBackend trait --> ada
 | `crates/dawmcp-reaper/src/installer.rs` | Copies `reaper_bridge.lua` + `reaper_project/default.RPP` into the REAPER install, wires both into `__startup.lua`; ported from `installer.py` |
 | `crates/dawmcp-reaper/src/backend.rs` | `DawBackend` trait impl for REAPER, one bridge op per method |
 | `crates/dawmcp-reaper/src/extra.rs` | REAPER-only ops with no cross-DAW equivalent (MIDI, items, markers, view, actions, compose, run_reascript) |
-| `crates/dawmcp-server/src/main.rs` | MCP tool definitions (`rmcp` `#[tool]` macros), CLI flag handling, entrypoint |
+| `crates/dawmcp-audacity/src/pipe_client.rs` | `mod-script-pipe` wire client (named pipes/FIFOs, verified against Audacity's reference client) |
+| `crates/dawmcp-audacity/src/backend.rs` | `DawBackend` trait impl for Audacity; doc comment cites the exact Audacity source file/line for every command used |
+| `crates/dawmcp-audacity/src/discovery.rs` | Finds Audacity installs/processes, checks pipe reachability |
+| `crates/dawmcp-server/src/main.rs` | MCP tool definitions (`rmcp` `#[tool]` macros), `--daw` backend selection, CLI flag handling, entrypoint |
 | `reaper_project/default.RPP` | Blank, track-less project checked into the repo, generated by REAPER itself (not hand-authored); auto-opened via the startup hook |
 
 ## Setup / test loop
@@ -221,24 +235,26 @@ ReaScript... -> `reaper_bridge.lua` -> Run. Full walkthrough in
 
 ## Possible next steps
 
-- Finish the Audacity adapter (`dawmcp-audacity` - scaffold only right
-  now): the pipe protocol (named pipes on Windows, FIFOs on Linux/Mac,
-  plain text command/response) is implemented and verified against
-  Audacity's official reference client source. Still needed, each requiring
-  its own doc/source verification pass before implementing (don't assume
-  parameter names from memory):
-  - Exact parameter keys for `SetTrackAudio`/`SetTrackStatus`/`SetTrackVisuals`
-    (mute/solo/gain/pan/rename/color).
-  - `GetInfo: Type=Tracks` response format, to implement `track_list` and to
-    resolve the new track index after `NewMonoTrack` for `track_add`.
-  - `SelectTracks`'s exact index parameter name, needed before any
-    track-index-targeted command can work (Audacity's commands act on
-    "selected"/"focused" tracks, not a track index directly).
-  - `Export2`'s parameter names, for `render_project`.
-  - Project save/undo command names.
-  - Wiring the finished backend into `dawmcp-server`'s binary (currently
-    hardcoded to `ReaperBackend` - needs a backend-selection mechanism,
-    e.g. a CLI flag or auto-detection of which DAW is running).
+- Audacity gaps still open (each needs the same source-verification
+  discipline as everything already implemented - don't assume from memory):
+  - `transport_seek`/`transport_set_tempo`/`transport_get_state`: no
+    verified command exists yet; may not be possible at all for tempo
+    (Audacity has no single project tempo concept).
+  - `fx_*`: Audacity's effects model (Effect menu, not a persistent
+    enumerable per-track chain) doesn't map onto REAPER's FX trait as-is;
+    would need its own design, not a 1:1 port.
+  - `track_set_color`: Audacity's `SetTrackVisuals: Colour=` is a small
+    preset enum (int index), not arbitrary RGB - needs either a nearest-
+    preset mapping (documented as approximate) or staying `Unsupported`.
+  - `project_save`'s behavior on a never-before-saved project is unverified
+    (may open a blocking "Save As" dialog, same class of risk as REAPER's
+    render-dialog lesson above) - needs live verification against a real
+    Audacity instance before being trusted.
+  - Auto-connecting Audacity's `mod-script-pipe` isn't possible the way
+    REAPER's bridge auto-installs, since enabling it is a security-relevant
+    user preference (Edit > Preferences > Modules) this project won't
+    silently flip - `--status`/`daw_status` can only report whether it's
+    already enabled and reachable.
 - `docs/ARCHITECTURE.md` still describes the REAPER-only Python-era design
   in places; needs a pass for the trait/adapter split.
 - Lint/type-checking (`cargo clippy`) - not yet wired into CI.
