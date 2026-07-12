@@ -206,21 +206,30 @@ struct RunReascriptParams {
 /// tools (transport/tracks/fx/render/project) work over any adapter without
 /// changing this file. `reaper_extra` additionally exposes REAPER-only
 /// tools (MIDI, items, markers, view, actions, compose_and_render,
-/// run_reascript) that have no cross-DAW equivalent - once a second adapter
-/// (e.g. Audacity) is wired in, this field needs to become adapter-specific
-/// / conditionally registered rather than always present.
+/// run_reascript) that have no cross-DAW equivalent - `None` when running
+/// against a non-REAPER backend (`--daw=audacity`), in which case those
+/// tools are still registered (rmcp's tool_router is static) but return a
+/// clear "not available for this DAW" error via `reaper()` instead of
+/// panicking.
 #[derive(Clone)]
 struct DawmcpServer {
     backend: Arc<dyn DawBackend>,
-    reaper_extra: Arc<ReaperBackend>,
+    reaper_extra: Option<Arc<ReaperBackend>>,
+    daw_name: &'static str,
     #[allow(dead_code)]
     tool_router: ToolRouter<DawmcpServer>,
 }
 
 #[tool_router]
 impl DawmcpServer {
-    fn new(backend: Arc<dyn DawBackend>, reaper_extra: Arc<ReaperBackend>) -> Self {
-        Self { backend, reaper_extra, tool_router: Self::tool_router() }
+    fn new(backend: Arc<dyn DawBackend>, reaper_extra: Option<Arc<ReaperBackend>>, daw_name: &'static str) -> Self {
+        Self { backend, reaper_extra, daw_name, tool_router: Self::tool_router() }
+    }
+
+    fn reaper(&self) -> Result<&Arc<ReaperBackend>, McpError> {
+        self.reaper_extra
+            .as_ref()
+            .ok_or_else(|| McpError::internal_error("this tool is REAPER-only and unavailable for the active DAW backend".to_string(), None))
     }
 
     #[tool(description = "Check whether the DAW and its bridge/adapter are reachable")]
@@ -397,7 +406,7 @@ impl DawmcpServer {
 
     #[tool(description = "Create an empty MIDI item on a track spanning start_sec to end_sec")]
     async fn midi_add_item(&self, Parameters(p): Parameters<MidiAddItemParams>) -> Result<CallToolResult, McpError> {
-        map_err(self.reaper_extra.midi_add_item(p.track_index, p.start_sec, p.end_sec).await)?;
+        map_err(self.reaper()?.midi_add_item(p.track_index, p.start_sec, p.end_sec).await)?;
         ok_json(serde_json::json!({}))
     }
 
@@ -407,7 +416,7 @@ impl DawmcpServer {
     )]
     async fn midi_add_note(&self, Parameters(p): Parameters<MidiAddNoteParams>) -> Result<CallToolResult, McpError> {
         map_err(
-            self.reaper_extra
+            self.reaper()?
                 .midi_add_note(
                     p.track_index,
                     p.item_start_sec,
@@ -424,55 +433,55 @@ impl DawmcpServer {
 
     #[tool(description = "Split the media item on a track that starts at item_start_sec, at split_at_sec")]
     async fn item_split(&self, Parameters(p): Parameters<ItemSplitParams>) -> Result<CallToolResult, McpError> {
-        map_err(self.reaper_extra.item_split(p.track_index, p.item_start_sec, p.split_at_sec).await)?;
+        map_err(self.reaper()?.item_split(p.track_index, p.item_start_sec, p.split_at_sec).await)?;
         ok_json(serde_json::json!({}))
     }
 
     #[tool(description = "Move the media item on a track that starts at item_start_sec to new_start_sec")]
     async fn item_move(&self, Parameters(p): Parameters<ItemMoveParams>) -> Result<CallToolResult, McpError> {
-        map_err(self.reaper_extra.item_move(p.track_index, p.item_start_sec, p.new_start_sec).await)?;
+        map_err(self.reaper()?.item_move(p.track_index, p.item_start_sec, p.new_start_sec).await)?;
         ok_json(serde_json::json!({}))
     }
 
     #[tool(description = "Glue all currently selected media items into one item each (per track)")]
     async fn item_glue_selected(&self) -> Result<CallToolResult, McpError> {
-        map_err(self.reaper_extra.item_glue_selected().await)?;
+        map_err(self.reaper()?.item_glue_selected().await)?;
         ok_json(serde_json::json!({}))
     }
 
     #[tool(description = "Render selected items in place (applies FX/pitch/rate destructively to a new item)")]
     async fn item_render_in_place_selected(&self) -> Result<CallToolResult, McpError> {
-        map_err(self.reaper_extra.item_render_in_place_selected().await)?;
+        map_err(self.reaper()?.item_render_in_place_selected().await)?;
         ok_json(serde_json::json!({}))
     }
 
     #[tool(description = "Add a project marker at the given position in seconds")]
     async fn marker_add(&self, Parameters(p): Parameters<MarkerAddParams>) -> Result<CallToolResult, McpError> {
-        let index = map_err(self.reaper_extra.marker_add(p.position_sec, p.name.as_deref()).await)?;
+        let index = map_err(self.reaper()?.marker_add(p.position_sec, p.name.as_deref()).await)?;
         ok_json(serde_json::json!({ "index": index }))
     }
 
     #[tool(description = "Add a project region spanning start_sec to end_sec")]
     async fn region_add(&self, Parameters(p): Parameters<RegionAddParams>) -> Result<CallToolResult, McpError> {
-        let index = map_err(self.reaper_extra.region_add(p.start_sec, p.end_sec, p.name.as_deref()).await)?;
+        let index = map_err(self.reaper()?.region_add(p.start_sec, p.end_sec, p.name.as_deref()).await)?;
         ok_json(serde_json::json!({ "index": index }))
     }
 
     #[tool(description = "Zoom the arrange view horizontally to fit the currently selected item(s)")]
     async fn view_zoom_to_selection(&self) -> Result<CallToolResult, McpError> {
-        map_err(self.reaper_extra.view_zoom_to_selection().await)?;
+        map_err(self.reaper()?.view_zoom_to_selection().await)?;
         ok_json(serde_json::json!({}))
     }
 
     #[tool(description = "Scroll the arrange view so the given position (seconds) is visible")]
     async fn view_scroll_to(&self, Parameters(p): Parameters<ViewScrollToParams>) -> Result<CallToolResult, McpError> {
-        map_err(self.reaper_extra.view_scroll_to(p.position_sec).await)?;
+        map_err(self.reaper()?.view_scroll_to(p.position_sec).await)?;
         ok_json(serde_json::json!({}))
     }
 
     #[tool(description = "Set the arrange view's horizontal zoom level, in pixels per second")]
     async fn view_set_arrange_zoom(&self, Parameters(p): Parameters<ViewSetZoomParams>) -> Result<CallToolResult, McpError> {
-        map_err(self.reaper_extra.view_set_arrange_zoom(p.pixels_per_sec).await)?;
+        map_err(self.reaper()?.view_set_arrange_zoom(p.pixels_per_sec).await)?;
         ok_json(serde_json::json!({}))
     }
 
@@ -482,7 +491,7 @@ impl DawmcpServer {
                         selected action ID'). section defaults to 0 (Main)."
     )]
     async fn action_run(&self, Parameters(p): Parameters<ActionParams>) -> Result<CallToolResult, McpError> {
-        map_err(self.reaper_extra.action_run(p.command_id, p.section.unwrap_or(0)).await)?;
+        map_err(self.reaper()?.action_run(p.command_id, p.section.unwrap_or(0)).await)?;
         ok_json(serde_json::json!({}))
     }
 
@@ -491,7 +500,7 @@ impl DawmcpServer {
                         -1 = not a toggle action (or state unknown)"
     )]
     async fn action_get_toggle_state(&self, Parameters(p): Parameters<ActionParams>) -> Result<CallToolResult, McpError> {
-        let state = map_err(self.reaper_extra.action_get_toggle_state(p.command_id, p.section.unwrap_or(0)).await)?;
+        let state = map_err(self.reaper()?.action_get_toggle_state(p.command_id, p.section.unwrap_or(0)).await)?;
         ok_json(serde_json::json!({ "state": state }))
     }
 
@@ -505,7 +514,7 @@ impl DawmcpServer {
     )]
     async fn compose_and_render(&self, Parameters(p): Parameters<ComposeAndRenderParams>) -> Result<CallToolResult, McpError> {
         let result = map_err(
-            self.reaper_extra
+            self.reaper()?
                 .compose_and_render(
                     &p.output_path,
                     &p.notes,
@@ -525,7 +534,7 @@ impl DawmcpServer {
                         string. Use this for anything not covered by a dedicated tool."
     )]
     async fn run_reascript(&self, Parameters(p): Parameters<RunReascriptParams>) -> Result<CallToolResult, McpError> {
-        let result = map_err(self.reaper_extra.run_reascript(&p.code).await)?;
+        let result = map_err(self.reaper()?.run_reascript(&p.code).await)?;
         ok_json(serde_json::json!({ "result": result }))
     }
 }
@@ -536,19 +545,32 @@ impl ServerHandler for DawmcpServer {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::from_build_env())
             .with_protocol_version(ProtocolVersion::V_2024_11_05)
-            .with_instructions(
-                "Tools for controlling a live DAW instance (currently REAPER): transport, \
-                 tracks, FX, and rendering. Call daw_status first if you're unsure whether \
-                 the DAW and its bridge are reachable."
-                    .to_string(),
-            )
+            .with_instructions(format!(
+                "Tools for controlling a live DAW instance (currently {}): transport, tracks, \
+                 FX, and rendering. Call daw_status first if you're unsure whether the DAW and \
+                 its bridge/adapter are reachable.",
+                self.daw_name
+            ))
     }
+}
+
+/// Which DAW backend to serve tools over, from `--daw=<name>` (default
+/// `reaper`). Audacity needs no bridge file installed - `mod-script-pipe`
+/// is a built-in module the user enables once in Audacity's own
+/// preferences - so `--daw=audacity` only affects which tools are
+/// registered, not what `--install-bridge`/the auto-install step does.
+fn daw_arg(args: &[String]) -> String {
+    args.iter()
+        .find_map(|a| a.strip_prefix("--daw="))
+        .unwrap_or("reaper")
+        .to_string()
 }
 
 /// Usage:
 ///   dawmcp                  # auto-install for every detected DAW, then run the MCP server over stdio
+///   dawmcp --daw=audacity   # serve Audacity's tool surface instead of REAPER's
 ///   dawmcp --install-bridge # install/update reaper_bridge.lua, then exit (no server)
-///   dawmcp --status         # print discovery/diagnostics, then exit (no server)
+///   dawmcp --status         # print discovery/diagnostics for every detected DAW, then exit (no server)
 ///   dawmcp --no-install     # run the MCP server without the auto-install step
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -562,28 +584,42 @@ async fn main() -> Result<()> {
     }
 
     if args.iter().any(|a| a == "--status") {
-        let report = run_discovery();
-        println!("{}", serde_json::to_string_pretty(&report)?);
+        let reaper_report = run_discovery();
+        let audacity_report = dawmcp_audacity::run_discovery().await;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "reaper": reaper_report,
+                "audacity": audacity_report,
+            }))?
+        );
         return Ok(());
     }
 
     // Auto-install for every detected DAW before serving, so pointing an
     // MCP client at this binary is enough on its own - no separate manual
-    // `--install-bridge`/build_and_install.bat step required. Only REAPER
-    // exists today; this is the seam where an Audacity (or other DAW)
-    // auto-setup call joins once that adapter lands. stderr only: stdout is
-    // the MCP JSON-RPC stream once `serve(stdio())` starts below.
+    // `--install-bridge`/build_and_install.bat step required. Audacity has
+    // nothing to install (see `daw_arg` doc comment), so this only ever
+    // touches REAPER. stderr only: stdout is the MCP JSON-RPC stream once
+    // `serve(stdio())` starts below.
     if !args.iter().any(|a| a == "--no-install") {
         for line in install_bridge() {
             eprintln!("[dawmcp install] {line}");
         }
     }
 
-    let bridge = BridgeClient::new(default_bridge_dir());
-    let reaper = Arc::new(ReaperBackend::new(bridge));
-    let backend: Arc<dyn DawBackend> = reaper.clone();
+    let (backend, reaper_extra, daw_name): (Arc<dyn DawBackend>, Option<Arc<ReaperBackend>>, &'static str) =
+        match daw_arg(&args).as_str() {
+            "audacity" => (Arc::new(dawmcp_audacity::AudacityBackend::new()), None, "Audacity"),
+            "reaper" => {
+                let bridge = BridgeClient::new(default_bridge_dir());
+                let reaper = Arc::new(ReaperBackend::new(bridge));
+                (reaper.clone(), Some(reaper), "REAPER")
+            }
+            other => anyhow::bail!("unknown --daw={other} (expected \"reaper\" or \"audacity\")"),
+        };
 
-    let service = DawmcpServer::new(backend, reaper).serve(stdio()).await?;
+    let service = DawmcpServer::new(backend, reaper_extra, daw_name).serve(stdio()).await?;
     service.waiting().await?;
     Ok(())
 }

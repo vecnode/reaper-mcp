@@ -158,6 +158,9 @@ dependencies = [
  "anyhow",
  "async-trait",
  "dawmcp-core",
+ "serde",
+ "serde_json",
+ "sysinfo",
  "tokio",
 ]
 
@@ -192,6 +195,7 @@ name = "dawmcp-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "dawmcp-audacity",
  "dawmcp-core",
  "dawmcp-reaper",
  "rmcp",

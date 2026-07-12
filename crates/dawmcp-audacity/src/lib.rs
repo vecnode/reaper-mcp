@@ -4,7 +4,9 @@
 //! left `Unsupported` pending further verification.
 
 mod backend;
+mod discovery;
 mod pipe_client;
 
 pub use backend::AudacityBackend;
+pub use discovery::{run_discovery, AudacityDiscoveryReport};
 pub use pipe_client::AudacityPipeClient;
