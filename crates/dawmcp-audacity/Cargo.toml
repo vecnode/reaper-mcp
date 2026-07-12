@@ -1,0 +1,12 @@
+[package]
+name = "dawmcp-audacity"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+dawmcp-core = { path = "../dawmcp-core" }
+anyhow.workspace = true
+async-trait.workspace = true
+tokio = { workspace = true, features = ["net", "io-util"] }

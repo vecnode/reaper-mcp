@@ -1,11 +1,5 @@
-__pycache__/
-*.pyc
+# Rust
+/target/
+
+# leftover local Python venv from before the Rust rewrite
 .venv/
-.venv-*/
-dist/
-build/
-*.egg-info/
-.pytest_cache/
-.ruff_cache/
-uv.lock.bak
-reaper_mcp.log

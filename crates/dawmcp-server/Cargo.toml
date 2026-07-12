@@ -1,0 +1,20 @@
+[package]
+name = "dawmcp-server"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "dawmcp"
+path = "src/main.rs"
+
+[dependencies]
+dawmcp-core = { path = "../dawmcp-core" }
+dawmcp-reaper = { path = "../dawmcp-reaper" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+schemars.workspace = true
+tokio.workspace = true
+rmcp = { version = "2", features = ["server", "macros", "transport-io"] }
