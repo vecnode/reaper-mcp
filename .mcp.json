@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "reaper": {
-      "command": "uv",
-      "args": ["--directory", ".", "run", "reaper-mcp"]
+      "command": "cargo",
+      "args": ["run", "--release", "-p", "dawmcp-server"]
     }
   }
 }
